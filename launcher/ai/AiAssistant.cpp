@@ -51,13 +51,13 @@ SettingsObject* aiSettings()
 {
     auto* settings = APPLICATION->settings();
     if (!settings->getSetting("AiApiBaseUrl")) {
-        settings->registerSetting("AiApiBaseUrl", "https://api.openai.com/v1");
+        settings->registerSetting("AiApiBaseUrl", "https://openrouter.ai/api/v1");
     }
     if (!settings->getSetting("AiApiKey")) {
         settings->registerSetting("AiApiKey", "");
     }
     if (!settings->getSetting("AiModel")) {
-        settings->registerSetting("AiModel", "gpt-4o-mini");
+        settings->registerSetting("AiModel", "openrouter/free");
     }
     return settings;
 }
@@ -315,6 +315,102 @@ QString AiAssistant::syncRunTask(Task* task)
 // conversation
 // ---------------------------------------------------------------------------
 
+bool AiAssistant::fetchModelIds(const QString& baseUrl, const QString& apiKey, QStringList* free,
+                                QStringList* paid, QString* error)
+{
+    QNetworkRequest request((QUrl(QStringLiteral("%1/models").arg(baseUrl))));
+    request.setTransferTimeout(60000);
+    request.setRawHeader("Accept", "application/json");
+    request.setRawHeader("User-Agent",
+                         QString("%1/%2 (AI assistant)")
+                             .arg(BuildConfig.LAUNCHER_DISPLAYNAME, BuildConfig.printableVersionString())
+                             .toUtf8());
+    if (!apiKey.isEmpty()) {
+        request.setRawHeader("Authorization", QStringLiteral("Bearer %1").arg(apiKey).toUtf8());
+    }
+
+    QEventLoop loop;
+    QTimer::singleShot(60000, &loop, &QEventLoop::quit);
+    auto* reply = m_nam->get(request);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    if (reply->error() != QNetworkReply::NoError) {
+        if (error) {
+            *error = reply->errorString();
+        }
+        reply->deleteLater();
+        return false;
+    }
+    auto doc = QJsonDocument::fromJson(reply->readAll());
+    reply->deleteLater();
+
+    const auto models = doc["data"].toArray();
+    for (const auto& m : models) {
+        auto obj = m.toObject();
+        const QString id = obj["id"].toString();
+        const auto pricing = obj["pricing"].toObject();
+        const bool isFree = pricing["prompt"].toString() == "0" && pricing["completion"].toString() == "0";
+        if (id.isEmpty()) {
+            continue;
+        }
+        if (isFree && free) {
+            free->append(id);
+        }
+        if (!isFree && paid) {
+            paid->append(id);
+        }
+    }
+    return true;
+}
+
+QString AiAssistant::resolveModel(const QString& baseUrl, const QString& apiKey, const QString& model, QString* error)
+{
+    if (!(isOpenRouter(baseUrl) && (model.isEmpty() || model == autoFreeModelName()))) {
+        return model;
+    }
+    // "openrouter/free": pick the best free model
+    QStringList free;
+    if (!fetchModelIds(baseUrl, apiKey, &free, nullptr, error)) {
+        return {};
+    }
+    // drop obviously non-chat models
+    QStringList chat;
+    for (const auto& id : free) {
+        static const QStringList banned = { "clip", "lyria", "image", "vision-only", "tts", "whisper" };
+        bool bad = false;
+        for (const auto& b : banned) {
+            if (id.contains(b, Qt::CaseInsensitive)) {
+                bad = true;
+                break;
+            }
+        }
+        if (!bad) {
+            chat.append(id);
+        }
+    }
+    if (chat.isEmpty()) {
+        chat = free;
+    }
+    if (chat.isEmpty()) {
+        if (error) {
+            *error = tr("No free models are currently available on OpenRouter");
+        }
+        return {};
+    }
+    // prefer known-good free chat models, then the first remaining one
+    static const QStringList preferred = { "deepseek/deepseek-chat-v3-0324:free",
+                                           "meta-llama/llama-3.3-70b-instruct:free",
+                                           "qwen/qwen-2.5-72b-instruct:free",
+                                           "google/gemini-2.0-flash-exp:free" };
+    for (const auto& p : preferred) {
+        if (chat.contains(p)) {
+            return p;
+        }
+    }
+    return chat.first();
+}
+
 void AiAssistant::sendUserMessage(const QString& message)
 {
     if (m_busy) {
@@ -329,13 +425,20 @@ void AiAssistant::sendUserMessage(const QString& message)
     const QString model = APPLICATION->settings()->get("AiModel").toString().trimmed();
 
     do {
-        if (apiKey.isEmpty() && baseUrl.contains("api.openai.com")) {
-            emit errorOccurred(tr("No API key configured. Open the AI settings and enter an API key (or point the base URL at a local "
-                                   "OpenAI-compatible server)."));
+        if (apiKey.isEmpty() && !baseUrl.isEmpty()) {
+            emit errorOccurred(tr("No API key configured. Enter a key in the AI settings (OpenRouter needs a key even for free "
+                                   "models), or point the base URL at a local server that does not require one."));
             break;
         }
 
         m_history.append(AiChatMessage::make("user", message));
+
+        QString resolveError;
+        const QString actualModel = resolveModel(baseUrl, apiKey, model, &resolveError);
+        if (actualModel.isEmpty()) {
+            emit errorOccurred(tr("Failed to resolve the model: %1").arg(resolveError));
+            break;
+        }
 
         bool finished = false;
         for (int iteration = 0; iteration < MAX_TOOL_ITERATIONS && !finished; ++iteration) {
@@ -345,13 +448,17 @@ void AiAssistant::sendUserMessage(const QString& message)
                 messages.append(msg.raw);
             }
 
-            QJsonObject body{ { "model", model },
+            QJsonObject body{ { "model", actualModel },
                               { "messages", messages },
                               { "tools", toolSpecs() },
                               { "temperature", 0.2 } };
             QStringList headers;
             if (!apiKey.isEmpty()) {
                 headers << QStringLiteral("Authorization: Bearer %1").arg(apiKey);
+            }
+            if (isOpenRouter(baseUrl)) {
+                headers << QStringLiteral("HTTP-Referer: https://github.com/PrismLauncher/PrismLauncher");
+                headers << QStringLiteral("X-Title: Prism Launcher");
             }
             auto reply = httpRequest("POST",
                                      QStringLiteral("%1/chat/completions").arg(baseUrl),

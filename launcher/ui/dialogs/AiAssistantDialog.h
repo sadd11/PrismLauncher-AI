@@ -19,6 +19,7 @@ class QLineEdit;
 class QPushButton;
 class QComboBox;
 class QLabel;
+class QToolButton;
 
 /** The AI assistant chat window (toolbar → "AI Assistant"). */
 class AiAssistantDialog : public QDialog {
@@ -34,6 +35,7 @@ class AiAssistantDialog : public QDialog {
    private slots:
     void send();
     void saveSettings();
+    void fetchModels();
 
    private:
     void appendHtml(const QString& html);
@@ -45,6 +47,7 @@ class AiAssistantDialog : public QDialog {
     QPushButton* m_sendButton = nullptr;
     QLineEdit* m_baseUrlEdit = nullptr;
     QLineEdit* m_apiKeyEdit = nullptr;
-    QLineEdit* m_modelEdit = nullptr;
+    QComboBox* m_modelCombo = nullptr;
+    QToolButton* m_fetchModelsButton = nullptr;
     QLabel* m_statusLabel = nullptr;
 };

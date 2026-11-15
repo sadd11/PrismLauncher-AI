@@ -55,8 +55,19 @@ class AiAssistant : public QObject {
     explicit AiAssistant(QObject* parent = nullptr);
     ~AiAssistant() override = default;
 
+    /** The model name meaning "pick the best free OpenRouter model". */
+    static QString autoFreeModelName() { return "openrouter/free"; }
+    /** True when the base URL points at OpenRouter. */
+    static bool isOpenRouter(const QString& baseUrl) { return baseUrl.contains("openrouter.ai"); }
+
     /** Sends a user message and runs the tool loop until a final reply. */
     void sendUserMessage(const QString& message);
+
+    /**
+     * Fetches the model catalogue from {base}/models. Fills free/paid lists
+     * (ids). Returns false and sets error on failure.
+     */
+    bool fetchModelIds(const QString& baseUrl, const QString& apiKey, QStringList* free, QStringList* paid, QString* error);
 
     /** Clears the conversation history. */
     void resetConversation();
@@ -114,6 +125,9 @@ class AiAssistant : public QObject {
     AiToolResult toolListLoaderVersions(const QString& loader);
 
     AiToolResult executeTool(const QString& name, const QJsonObject& args);
+
+    /** Resolves "openrouter/free" (and empty) to a concrete model id. */
+    QString resolveModel(const QString& baseUrl, const QString& apiKey, const QString& model, QString* error);
 
     QString toolSummary(const QString& name, const QJsonObject& args) const;
 

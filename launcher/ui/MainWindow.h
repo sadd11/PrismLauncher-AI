@@ -49,6 +49,7 @@
 class EditableLabel;
 class LaunchController;
 class NewsChecker;
+class AiAssistantDialog;
 class QLabel;
 class QTextEdit;
 class QToolButton;
@@ -236,6 +237,8 @@ class MainWindow : public QMainWindow {
     void runModalTask(Task* task);
     void instanceFromInstanceTask(InstanceTask* task);
 
+    void openAiAssistant();
+
     void handleInstanceRename(const QString& before, const QString& after);
 
    private:
@@ -254,6 +257,7 @@ class MainWindow : public QMainWindow {
     KonamiCode* secretEventFilter = nullptr;
 
     unique_qobject_ptr<NewsChecker> m_newsChecker;
+    AiAssistantDialog* m_aiAssistantDialog = nullptr;
 
     MinecraftInstance* m_selectedInstance = nullptr;
     QString m_currentInstIcon;

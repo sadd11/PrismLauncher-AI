@@ -44,6 +44,7 @@
 
 #include "MainWindow.h"
 #include "ui_MainWindow.h"
+#include "ui/dialogs/AiAssistantDialog.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -267,6 +268,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui(new Ui::MainWi
     updateMainToolBar();
     // OSX magic.
     setUnifiedTitleAndToolBarOnMac(true);
+
+    // AI assistant toolbar button
+    {
+        auto* aiAction = new QAction(tr("AI Assistant"), this);
+        aiAction->setToolTip(tr("Open the AI assistant"));
+        ui->mainToolBar->insertAction(ui->actionSettings, aiAction);
+        connect(aiAction, &QAction::triggered, this, &MainWindow::openAiAssistant);
+    }
 
     // Global shortcuts
     {
@@ -871,6 +880,16 @@ void MainWindow::instanceFromInstanceTask(InstanceTask* rawTask)
 {
     unique_qobject_ptr<Task> task(APPLICATION->instances()->wrapInstanceTask(rawTask));
     runModalTask(task.get());
+}
+
+void MainWindow::openAiAssistant()
+{
+    if (!m_aiAssistantDialog) {
+        m_aiAssistantDialog = new AiAssistantDialog(this);
+    }
+    m_aiAssistantDialog->show();
+    m_aiAssistantDialog->raise();
+    m_aiAssistantDialog->activateWindow();
 }
 
 void MainWindow::on_actionCopyInstance_triggered()

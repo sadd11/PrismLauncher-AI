@@ -492,6 +492,9 @@ set(API_SOURCES
     modplatform/helpers/OverrideUtils.h
     modplatform/helpers/OverrideUtils.cpp
 
+    ai/AiAssistant.h
+    ai/AiAssistant.cpp
+
     modplatform/helpers/ExportToModList.h
     modplatform/helpers/ExportToModList.cpp
 )
@@ -1027,6 +1030,9 @@ SET(LAUNCHER_SOURCES
     ui/pages/modplatform/modrinth/ModrinthResourcePages.h
 
     # GUI - dialogs
+    ui/dialogs/AiAssistantDialog.cpp
+    ui/dialogs/AiAssistantDialog.h
+
     ui/dialogs/AboutDialog.cpp
     ui/dialogs/AboutDialog.h
     ui/dialogs/ProfileSelectDialog.cpp

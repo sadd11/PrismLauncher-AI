@@ -10,7 +10,7 @@
 
 #include "AiAssistantDialog.h"
 
-#include "AiAssistant.h"
+#include "ai/AiAssistant.h"
 #include "Application.h"
 
 #include <QComboBox>

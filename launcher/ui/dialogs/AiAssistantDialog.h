@@ -12,7 +12,7 @@
 
 #include <QDialog>
 
-#include "AiAssistant.h"
+#include "ai/AiAssistant.h"
 
 class QTextBrowser;
 class QLineEdit;

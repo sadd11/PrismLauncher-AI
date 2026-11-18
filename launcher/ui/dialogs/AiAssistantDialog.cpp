@@ -68,7 +68,7 @@ QString markdownToHtml(const QString& text)
     doc.setMarkdown(text, QTextDocument::MarkdownDialectGitHub);
     QString html = doc.toHtml();
     // extract the body contents so it can be appended into the log
-    const auto start = static_cast<qsizetype>(html.indexOf("<body", 0, Qt::CaseInsensitive));
+    auto start = static_cast<qsizetype>(html.indexOf("<body", 0, Qt::CaseInsensitive));
     if (start < 0) {
         return text.toHtmlEscaped().replace('\n', QStringLiteral("<br>"));
     }

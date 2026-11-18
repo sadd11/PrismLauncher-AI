@@ -804,7 +804,6 @@ AiToolResult AiAssistant::toolInstallContent(const QString& idOrName,
 {
     // modpacks become their own instance via ModrinthCreationTask
     if (contentType == "modpack") {
-        auto* meta = APPLICATION->metadataIndex();
         auto stagingPath = APPLICATION->instances()->getStagedInstancePath({});
         if (stagingPath.isEmpty()) {
             return { false, tr("Could not create a staging folder") };

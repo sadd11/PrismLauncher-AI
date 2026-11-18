@@ -19,9 +19,11 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QRegularExpression>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QTextBrowser>
+#include <QTextDocument>
 #include <QTextEdit>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -71,6 +73,14 @@ AiAssistantDialog::AiAssistantDialog(QWidget* parent) : QDialog(parent)
 
     // input row
     auto* inputRow = new QHBoxLayout();
+    m_formatCombo = new QComboBox(this);
+    m_formatCombo->setToolTip(tr("How to render assistant replies"));
+    m_formatCombo->addItem(tr("Auto"), "auto");
+    m_formatCombo->addItem(tr("Markdown"), "markdown");
+    m_formatCombo->addItem(tr("MarkdownV2"), "markdownv2");
+    m_formatCombo->addItem(tr("Plain text"), "plain");
+    m_formatCombo->setCurrentIndex(0);
+    inputRow->addWidget(m_formatCombo);
     m_input = new QLineEdit(this);
     m_input->setPlaceholderText(tr("Ask the assistant… (Enter to send)"));
     inputRow->addWidget(m_input, 1);
@@ -102,7 +112,7 @@ AiAssistantDialog::AiAssistantDialog(QWidget* parent) : QDialog(parent)
     connect(m_fetchModelsButton, &QToolButton::clicked, this, &AiAssistantDialog::fetchModels);
     connect(&m_assistant, &AiAssistant::assistantReply, this, [this](const QString& text) {
         m_statusLabel->clear();
-        appendMessage("assistant", text);
+        appendMessage("assistant", renderAssistantText(text));
     });
     connect(&m_assistant, &AiAssistant::toolStarted, this, [this](const QString& tool, const QString& args) {
         m_statusLabel->setText(QStringLiteral("🔧 %1 %2…").arg(tool, args));
@@ -119,6 +129,82 @@ AiAssistantDialog::AiAssistantDialog(QWidget* parent) : QDialog(parent)
         m_sendButton->setEnabled(!busy);
         m_input->setEnabled(!busy);
     });
+}
+
+namespace {
+
+/// Telegram MarkdownV2 escapes: backslash before these characters must be
+/// removed before rendering.
+QString unescapeMarkdownV2(const QString& text)
+{
+    static const QString specials = QStringLiteral("_*[]()~`>#+-=|{}.!");
+    QString out;
+    out.reserve(text.size());
+    for (int i = 0; i < text.size(); ++i) {
+        const QChar ch = text.at(i);
+        if (ch == u'\\' && i + 1 < text.size() && specials.contains(text.at(i + 1))) {
+            out += text.at(i + 1);
+            ++i;
+        } else {
+            out += ch;
+        }
+    }
+    return out;
+}
+
+int countMarkdownV2Escapes(const QString& text)
+{
+    static const QRegularExpression re(QStringLiteral("\\\\[_*{}\\[\\]()#+\\-.!]"));
+    int n = 0;
+    auto it = re.globalMatch(text);
+    while (it.hasNext()) {
+        it.next();
+        ++n;
+    }
+    return n;
+}
+
+/// Renders markdown (standard / GitHub dialect) into an HTML fragment.
+QString markdownToHtml(const QString& text)
+{
+    QTextDocument doc;
+    doc.setDefaultFont(QFont());
+    doc.setMarkdown(text, QTextDocument::MarkdownDialectGitHub);
+    QString html = doc.toHtml();
+    // extract the body contents so it can be appended into the log
+    int start = html.indexOf("<body", 0, Qt::CaseInsensitive);
+    if (start < 0) {
+        return text.toHtmlEscaped().replace('\n', QStringLiteral("<br>"));
+    }
+    start = html.indexOf(u'>', start) + 1;
+    int end = html.lastIndexOf("</body>", -1, Qt::CaseInsensitive);
+    if (end < start) {
+        return text.toHtmlEscaped().replace('\n', QStringLiteral("<br>"));
+    }
+    return html.mid(start, end - start);
+}
+
+}  // namespace
+
+QString AiAssistantDialog::renderAssistantText(const QString& text) const
+{
+    const int idx = m_formatCombo->currentIndex();
+    const QString mode = m_formatCombo->itemData(idx).isValid() ? m_formatCombo->itemData(idx).toString()
+                                                                 : QStringLiteral("auto");
+    if (mode == "plain") {
+        return text.toHtmlEscaped().replace('\n', QStringLiteral("<br>"));
+    }
+    if (mode == "markdownv2") {
+        return markdownToHtml(unescapeMarkdownV2(text));
+    }
+    if (mode == "markdown") {
+        return markdownToHtml(text);
+    }
+    // auto: MarkdownV2-escaped text is unescaped first, then rendered
+    if (countMarkdownV2Escapes(text) >= 2) {
+        return markdownToHtml(unescapeMarkdownV2(text));
+    }
+    return markdownToHtml(text);
 }
 
 void AiAssistantDialog::appendHtml(const QString& html)

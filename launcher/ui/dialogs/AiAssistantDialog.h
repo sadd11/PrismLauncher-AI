@@ -37,6 +37,8 @@ class AiAssistantDialog : public QDialog {
     void saveSettings();
     void fetchModels();
 
+    QString renderAssistantText(const QString& text) const;
+
    private:
     void appendHtml(const QString& html);
     void appendMessage(const QString& role, const QString& text);
@@ -48,6 +50,7 @@ class AiAssistantDialog : public QDialog {
     QLineEdit* m_baseUrlEdit = nullptr;
     QLineEdit* m_apiKeyEdit = nullptr;
     QComboBox* m_modelCombo = nullptr;
+    QComboBox* m_formatCombo = nullptr;
     QToolButton* m_fetchModelsButton = nullptr;
     QLabel* m_statusLabel = nullptr;
 };

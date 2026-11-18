@@ -394,7 +394,7 @@ QString AiAssistant::currentLauncherState() const
     }
     auto* accounts = APPLICATION->accounts();
     if (auto account = accounts->defaultAccount()) {
-        lines << QStringLiteral("Active account: %1").arg(account->data.profile_name());
+        lines << QStringLiteral("Active account: %1").arg(account->profileName());
     } else {
         lines << "Active account: none (launch will require login)";
     }
@@ -818,7 +818,7 @@ AiToolResult AiAssistant::toolListInstances()
         const auto loader = loaderDisplayName(instanceLoaderUid(inst));
         lines << QStringLiteral("- id=%1 | name=%2 | MC %3%4")
                      .arg(inst->id(), inst->name(), instanceMcVersion(inst),
-                          loader.isEmpty() ? QString() : QStringLiteral(" | %1").arg(loader)));
+                          loader.isEmpty() ? QString() : QStringLiteral(" | %1").arg(loader));
     }
     return { true, lines.join(u'\n') };
 }

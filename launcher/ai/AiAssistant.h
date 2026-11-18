@@ -83,6 +83,9 @@ class AiAssistant : public QObject {
     /** A snapshot of the launcher state injected as context each turn. */
     QString currentLauncherState() const;
 
+    bool fetchModelIds(const QString& baseUrl, const QString& apiKey, QStringList* free, QStringList* paid, QString* error);
+    QString resolveModel(const QString& baseUrl, const QString& apiKey, const QString& model, QString* error);
+
     const QList<QJsonObject>& history() const { return m_history; }
 
    signals:

@@ -483,7 +483,6 @@ void AiAssistant::sendUserMessage(const QString& message)
             bool gotToolCalls = false;
             bool streamBegan = false;
             bool streamDone = false;
-            bool failed = false;
             QString failReason;
             QByteArray sseBuffer;
             QMap<int, QJsonObject> toolAcc;

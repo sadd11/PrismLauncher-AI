@@ -133,6 +133,6 @@ class AiAssistant : public QObject {
 
    private:
     QNetworkAccessManager* m_nam = nullptr;
-    QList<QJsonObject> m_history;
+    QList<AiChatMessage> m_history;
     bool m_busy = false;
 };

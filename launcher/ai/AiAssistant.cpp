@@ -905,7 +905,8 @@ AiToolResult AiAssistant::toolInstallContent(const QString& idOrName,
 
     // validate the sha1 if provided by the version entry
     return { true,
-             tr("Installed %1 into %2 (version %3)").arg(file->second, targetDir, (*chosen)["version_number"].toString()) };
+             tr("Installed %1 into %2 (version %3)")
+                 .arg(file->second, targetDir, chosen["version_number"].toString()) };
 }
 
 AiToolResult AiAssistant::toolSetInstanceSettings(const QString& idOrName, const QJsonObject& changes)

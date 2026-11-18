@@ -17,6 +17,7 @@
 #include <QString>
 
 class QNetworkAccessManager;
+class QNetworkReply;
 class MinecraftInstance;
 
 /** One message of the LLM conversation (kept as the raw protocol object). */
@@ -39,15 +40,14 @@ struct AiToolResult {
 
 /**
  * The AI assistant backend: talks to an OpenAI-compatible chat completions
- * endpoint with tool calling, and executes the tools against the launcher
- * (instances, Modrinth content, launch, settings).
+ * endpoint with tool calling and streaming, and executes the tools against
+ * the launcher (instances, Modrinth content, launch, settings).
  *
  * Settings (global SettingsObject keys, registered on first use):
- *   AiApiBaseUrl - default "https://api.openai.com/v1"
+ *   AiApiBaseUrl - default "https://openrouter.ai/api/v1"
  *   AiApiKey     - the API token
- *   AiModel      - default "gpt-4o-mini" (any tool-calling model works;
- *                  also compatible with local OpenAI-compatible servers,
- *                  e.g. LM Studio / Ollama at http://localhost:1234/v1)
+ *   AiModel      - default "openrouter/free" (auto: best free OpenRouter model;
+ *                  also compatible with local OpenAI-compatible servers)
  */
 class AiAssistant : public QObject {
     Q_OBJECT
@@ -61,23 +61,29 @@ class AiAssistant : public QObject {
     /** True when the base URL points at OpenRouter. */
     static bool isOpenRouter(const QString& baseUrl) { return baseUrl.contains("openrouter.ai"); }
 
-    /** Sends a user message and runs the tool loop until a final reply. */
+    /** Sends a user message; the reply streams via the stream* signals. */
     void sendUserMessage(const QString& message);
 
-    /**
-     * Fetches the model catalogue from {base}/models. Fills free/paid lists
-     * (ids). Returns false and sets error on failure.
-     */
-    bool fetchModelIds(const QString& baseUrl, const QString& apiKey, QStringList* free, QStringList* paid, QString* error);
+    /** Aborts the in-flight request (streaming/tool loop stops). */
+    void abortGeneration();
 
-    /** Clears the conversation history. */
+    /** Clears the conversation history (and the persisted chat file). */
     void resetConversation();
+
+    /** Loads / saves the persisted conversation (ai-chat.json). */
+    void loadHistory();
+    void saveHistory();
 
     /** The tool definitions exposed to the model. */
     static QJsonArray toolSpecs();
 
-    /** The system prompt. */
+    /** The base system prompt. */
     static QString systemPrompt();
+
+    /** A snapshot of the launcher state injected as context each turn. */
+    QString currentLauncherState() const;
+
+    const QList<QJsonObject>& history() const { return m_history; }
 
    signals:
     void assistantReply(const QString& text);
@@ -85,6 +91,10 @@ class AiAssistant : public QObject {
     void toolFinished(const QString& toolName, const QString& resultSummary, bool ok);
     void errorOccurred(const QString& error);
     void busyChanged(bool busy);
+
+    void streamStarted();
+    void streamDelta(const QString& delta);
+    void streamFinished(bool hadToolCalls, const QString& fullText);
 
    private:
     struct HttpReply {
@@ -103,6 +113,7 @@ class AiAssistant : public QObject {
 
     MinecraftInstance* findInstance(const QString& idOrName) const;
     static QString loaderUid(const QString& loader);
+    static QString loaderDisplayName(const QString& uid);
     QString instanceMcVersion(MinecraftInstance* inst) const;
     QString instanceLoaderUid(MinecraftInstance* inst) const;
 
@@ -128,13 +139,12 @@ class AiAssistant : public QObject {
 
     AiToolResult executeTool(const QString& name, const QJsonObject& args);
 
-    /** Resolves "openrouter/free" (and empty) to a concrete model id. */
-    QString resolveModel(const QString& baseUrl, const QString& apiKey, const QString& model, QString* error);
-
     QString toolSummary(const QString& name, const QJsonObject& args) const;
 
    private:
     QNetworkAccessManager* m_nam = nullptr;
-    QList<AiChatMessage> m_history;
+    QNetworkReply* m_currentReply = nullptr;
+    QList<QJsonObject> m_history;
     bool m_busy = false;
+    bool m_aborted = false;
 };

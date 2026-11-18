@@ -37,20 +37,27 @@ class AiAssistantDialog : public QDialog {
     void saveSettings();
     void fetchModels();
 
-    QString renderAssistantText(const QString& text) const;
-
    private:
     void appendHtml(const QString& html);
     void appendMessage(const QString& role, const QString& text);
+    QString renderAssistantText(const QString& text) const;
+    void reloadHistoryDisplay();
+    void applyProviderPreset(const QString& presetId);
 
     AiAssistant m_assistant;
     QTextBrowser* m_log = nullptr;
     QLineEdit* m_input = nullptr;
     QPushButton* m_sendButton = nullptr;
+    QPushButton* m_stopButton = nullptr;
+    QComboBox* m_providerCombo = nullptr;
     QLineEdit* m_baseUrlEdit = nullptr;
     QLineEdit* m_apiKeyEdit = nullptr;
     QComboBox* m_modelCombo = nullptr;
-    QComboBox* m_formatCombo = nullptr;
     QToolButton* m_fetchModelsButton = nullptr;
+    QComboBox* m_formatCombo = nullptr;
     QLabel* m_statusLabel = nullptr;
+
+    // streaming state
+    bool m_streaming = false;
+    int m_streamAnchor = 0;
 };

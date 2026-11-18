@@ -10,28 +10,21 @@
 
 #include "AiAssistant.h"
 
-#include "Application.h"
 #include <BuildConfig.h>
+#include "Application.h"
 #include "BaseVersion.h"
 #include "FileSystem.h"
-#include "settings/SettingsObject.h"
-#include "tasks/Task.h"
 #include "InstanceList.h"
-#include "BaseInstance.h"
-#include "meta/Index.h"
-#include "meta/VersionList.h"
-#include "meta/Version.h"
+#include "minecraft/auth/AccountList.h"
 #include "minecraft/MinecraftInstance.h"
 #include "minecraft/PackProfile.h"
 #include "minecraft/VanillaInstanceCreationTask.h"
 #include "modplatform/modrinth/ModrinthInstanceCreationTask.h"
+#include "settings/SettingsObject.h"
+#include "tasks/Task.h"
 
 #include <QEventLoop>
 #include <QFile>
-#include <QUrl>
-
-#include <optional>
-#include <utility>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -40,7 +33,11 @@
 #include <QNetworkRequest>
 #include <QRegularExpression>
 #include <QTimer>
+#include <QUrl>
 #include <QUrlQuery>
+
+#include <optional>
+#include <utility>
 
 using namespace Qt::Literals::StringLiterals;
 
@@ -59,6 +56,9 @@ SettingsObject* aiSettings()
     }
     if (!settings->getSetting("AiModel")) {
         settings->registerSetting("AiModel", "openrouter/free");
+    }
+    if (!settings->getSetting("AiChatFormat")) {
+        settings->registerSetting("AiChatFormat", "auto");
     }
     return settings;
 }
@@ -82,8 +82,7 @@ QString modrinthProjectType(const QString& contentType)
     return contentType;  // mod, plugin, datapack, shader, resourcepack, modpack
 }
 
-/// Extracts the primary download URL (and filename) from a Modrinth version
-/// JSON object.
+/// Selects the primary (or first) file of a Modrinth version object.
 std::optional<std::pair<QString, QString>> primaryFileOfVersion(const QJsonObject& version)
 {
     const auto files = version["files"].toArray();
@@ -108,28 +107,22 @@ AiAssistant::AiAssistant(QObject* parent) : QObject(parent), m_nam(new QNetworkA
     aiSettings();  // ensure the settings keys exist
 }
 
-void AiAssistant::resetConversation()
-{
-    m_history.clear();
-}
-
 QString AiAssistant::systemPrompt()
 {
     return QObject::tr("You are the built-in AI assistant of Prism Launcher, a Minecraft launcher. "
-              "You control the launcher through tools: you can list/create/delete/launch game instances, "
-              "search Modrinth for mods, plugins, datapacks, shader packs, resource packs and modpacks, "
-              "install content into instances and change instance settings. "
-              "Rules: use the tools to answer questions about the real state — never invent instance names or versions. "
-              "When the user asks for content (e.g. 'install OptiFine', 'find shaders'), first search, then present the best matches, "
-              "then install into the requested (or the only) instance. "
-              "Always confirm before destructive actions (deleting an instance). "
-              "When creating instances pick sensible defaults and report what you created. "
-              "Reply in the language the user writes in. Be concise.");
+                       "You control the launcher through tools: you can list/create/delete/launch game instances, "
+                       "search Modrinth for mods, plugins, datapacks, shader packs, resource packs and modpacks, "
+                       "install content into instances and change instance settings. "
+                       "Rules: use the tools to answer questions about the real state — never invent instance names or versions. "
+                       "When the user asks for content (e.g. 'install OptiFine', 'find shaders'), first search, then present the best matches, "
+                       "then install into the requested (or the only) instance. "
+                       "Always confirm before destructive actions (deleting an instance). "
+                       "When creating instances pick sensible defaults and report what you created. "
+                       "Reply in the language the user writes in. Be concise.");
 }
 
 QJsonArray AiAssistant::toolSpecs()
 {
-    // Small helper so the schemas stay readable.
     auto fn = [](const QString& name, const QString& description, const QJsonObject& properties,
                  const QStringList& required) -> QJsonObject {
         QJsonObject props;
@@ -228,7 +221,7 @@ QString AiAssistant::toolSummary(const QString& name, const QJsonObject& args) c
 // ---------------------------------------------------------------------------
 
 AiAssistant::HttpReply AiAssistant::httpRequest(const QString& method, const QString& url, const QByteArray& body,
-                                                 const QStringList& headers, int timeoutMs)
+                                                const QStringList& headers, int timeoutMs)
 {
     QNetworkRequest request((QUrl(url)));
     request.setTransferTimeout(timeoutMs);
@@ -317,8 +310,401 @@ QString AiAssistant::syncRunTask(Task* task)
 }
 
 // ---------------------------------------------------------------------------
-// conversation
+// helpers
 // ---------------------------------------------------------------------------
+
+MinecraftInstance* AiAssistant::findInstance(const QString& idOrName) const
+{
+    auto* instances = APPLICATION->instances();
+    if (auto* inst = instances->getInstanceById(idOrName)) {
+        return inst;
+    }
+    // exact name, then case-insensitive substring
+    for (int i = 0; i < instances->count(); ++i) {
+        auto* inst = instances->at(i);
+        if (inst->name().compare(idOrName, Qt::CaseInsensitive) == 0) {
+            return inst;
+        }
+    }
+    for (int i = 0; i < instances->count(); ++i) {
+        auto* inst = instances->at(i);
+        if (inst->name().contains(idOrName, Qt::CaseInsensitive)) {
+            return inst;
+        }
+    }
+    return nullptr;
+}
+
+QString AiAssistant::loaderUid(const QString& loader)
+{
+    if (loader == "fabric")
+        return "net.fabricmc.fabric-loader";
+    if (loader == "quilt")
+        return "org.quiltmc.quilt-loader";
+    if (loader == "forge")
+        return "net.minecraftforge";
+    if (loader == "neoforge")
+        return "net.neoforged";
+    return {};
+}
+
+QString AiAssistant::loaderDisplayName(const QString& uid)
+{
+    if (uid == "net.fabricmc.fabric-loader")
+        return "Fabric";
+    if (uid == "org.quiltmc.quilt-loader")
+        return "Quilt";
+    if (uid == "net.minecraftforge")
+        return "Forge";
+    if (uid == "net.neoforged")
+        return "NeoForge";
+    return {};
+}
+
+QString AiAssistant::instanceMcVersion(MinecraftInstance* inst) const
+{
+    return inst->getPackProfile()->getComponentVersion("net.minecraft");
+}
+
+QString AiAssistant::instanceLoaderUid(MinecraftInstance* inst) const
+{
+    for (const QString& uid : { "net.fabricmc.fabric-loader", "org.quiltmc.quilt-loader", "net.minecraftforge", "net.neoforged" }) {
+        if (!inst->getPackProfile()->getComponentVersion(uid).isEmpty()) {
+            return uid;
+        }
+    }
+    return {};
+}
+
+QString AiAssistant::currentLauncherState() const
+{
+    QStringList lines;
+    auto* instances = APPLICATION->instances();
+    if (instances->count() == 0) {
+        lines << "Instances: none";
+    } else {
+        lines << "Instances:";
+        for (int i = 0; i < instances->count(); ++i) {
+            auto* inst = instances->at(i);
+            const auto loader = loaderDisplayName(instanceLoaderUid(inst));
+            lines << QStringLiteral("- id=%1 | name=%2 | MC %3%4")
+                         .arg(inst->id(), inst->name(), instanceMcVersion(inst),
+                              loader.isEmpty() ? QString() : QStringLiteral(" | %1").arg(loader)));
+        }
+    }
+    auto* accounts = APPLICATION->accounts();
+    if (auto account = accounts->defaultAccount()) {
+        lines << QStringLiteral("Active account: %1").arg(account->data.profile_name());
+    } else {
+        lines << "Active account: none (launch will require login)";
+    }
+    return lines.join(u'\n');
+}
+
+// ---------------------------------------------------------------------------
+// conversation (streaming)
+// ---------------------------------------------------------------------------
+
+void AiAssistant::sendUserMessage(const QString& message)
+{
+    if (m_busy) {
+        return;
+    }
+    m_busy = true;
+    emit busyChanged(true);
+
+    aiSettings();
+    const QString baseUrl = APPLICATION->settings()->get("AiApiBaseUrl").toString().trimmed();
+    const QString apiKey = APPLICATION->settings()->get("AiApiKey").toString().trimmed();
+    const QString model = APPLICATION->settings()->get("AiModel").toString().trimmed();
+
+    do {
+        if (apiKey.isEmpty() && !baseUrl.isEmpty()) {
+            emit errorOccurred(tr("No API key configured. Enter a key in the AI settings (OpenRouter needs a key even for free "
+                                   "models), or point the base URL at a local server that does not require one."));
+            break;
+        }
+
+        QString resolveError;
+        const QString actualModel = resolveModel(baseUrl, apiKey, model, &resolveError);
+        if (actualModel.isEmpty()) {
+            emit errorOccurred(tr("Failed to resolve the model: %1").arg(resolveError));
+            break;
+        }
+
+        m_history.append(QJsonObject{ { "role", "user" }, { "content", message } });
+
+        bool finished = false;
+        for (int iteration = 0; iteration < MAX_TOOL_ITERATIONS && !finished; ++iteration) {
+            // build messages: base system prompt + live launcher-state snapshot + history
+            QJsonArray messages;
+            messages.append(QJsonObject{ { "role", "system" }, { "content", systemPrompt() } });
+            messages.append(QJsonObject{ { "role", "system" }, { "content", currentLauncherState() } });
+            for (const auto& msg : m_history) {
+                messages.append(msg);
+            }
+
+            QJsonObject body{ { "model", actualModel },
+                              { "messages", messages },
+                              { "tools", toolSpecs() },
+                              { "temperature", 0.2 },
+                              { "stream", true } };
+            QStringList headers;
+            if (!apiKey.isEmpty()) {
+                headers << QStringLiteral("Authorization: Bearer %1").arg(apiKey);
+            }
+            if (isOpenRouter(baseUrl)) {
+                headers << QStringLiteral("HTTP-Referer: https://github.com/PrismLauncher/PrismLauncher");
+                headers << QStringLiteral("X-Title: Prism Launcher");
+            }
+
+            QNetworkRequest request((QUrl(QStringLiteral("%1/chat/completions").arg(baseUrl))));
+            request.setTransferTimeout(300000);
+            request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+            request.setRawHeader("Accept", "application/json");
+            request.setRawHeader("User-Agent", QString("%1/%2 (AI assistant)")
+                                                    .arg(BuildConfig.LAUNCHER_DISPLAYNAME, BuildConfig.printableVersionString())
+                                                    .toUtf8());
+            for (const auto& header : headers) {
+                const auto pair = header.split(u':');
+                if (pair.size() == 2) {
+                    request.setRawHeader(pair[0].trimmed().toUtf8(), pair[1].trimmed().toUtf8());
+                }
+            }
+
+            m_aborted = false;
+            m_currentReply = m_nam->post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+
+            // ---- streaming state ----
+            QString content;
+            bool gotToolCalls = false;
+            bool streamBegan = false;
+            bool streamDone = false;
+            bool failed = false;
+            QString failReason;
+            QByteArray sseBuffer;
+            QMap<int, QJsonObject> toolAcc;
+
+            QEventLoop loop;
+            QObject::connect(m_currentReply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+
+            auto processSseLine = [&](QByteArray line) {
+                if (line.endsWith('\r')) {
+                    line.chop(1);
+                }
+                if (line.isEmpty() || line.startsWith(':')) {
+                    return;  // keep-alive comment from OpenRouter
+                }
+                if (!line.startsWith("data:")) {
+                    return;
+                }
+                const QByteArray payload = line.mid(5).trimmed();
+                if (payload.isEmpty()) {
+                    return;
+                }
+                if (payload == "[DONE]") {
+                    streamDone = true;
+                    loop.quit();
+                    return;
+                }
+                auto doc = QJsonDocument::fromJson(payload);
+                if (!doc.isObject()) {
+                    return;
+                }
+                const auto choices = doc["choices"].toArray();
+                if (choices.isEmpty()) {
+                    return;
+                }
+                const auto choice = choices.at(0).toObject();
+                const auto delta = choice["delta"].toObject();
+                if (delta.contains("content")) {
+                    const QString deltaText = delta["content"].toString();
+                    if (!deltaText.isEmpty()) {
+                        if (!streamBegan) {
+                            streamBegan = true;
+                            emit streamStarted();
+                        }
+                        content += deltaText;
+                        emit streamDelta(deltaText);
+                    }
+                }
+                if (delta.contains("tool_calls")) {
+                    gotToolCalls = true;
+                    for (const auto& tc : delta["tool_calls"].toArray()) {
+                        auto call = tc.toObject();
+                        const int index = call["index"].toInt();
+                        QJsonObject entry = toolAcc.value(index);
+                        if (call.contains("id") && !call["id"].toString().isEmpty()) {
+                            entry["id"] = call["id"].toString();
+                        }
+                        if (call.contains("type")) {
+                            entry["type"] = call["type"];
+                        }
+                        const auto fn = call["function"].toObject();
+                        if (!fn.isEmpty()) {
+                            auto fnAcc = entry["function"].toObject();
+                            if (fn.contains("name") && !fn["name"].toString().isEmpty()) {
+                                fnAcc["name"] = fn["name"];
+                            }
+                            if (fn.contains("arguments")) {
+                                fnAcc["arguments"] = fnAcc["arguments"].toString() + fn["arguments"].toString();
+                            }
+                            entry["function"] = fnAcc;
+                        }
+                        toolAcc.insert(index, entry);
+                    }
+                }
+                const auto finishReason = choice["finish_reason"].toString();
+                if (finishReason == "tool_calls") {
+                    gotToolCalls = true;
+                }
+            };
+
+            QObject::connect(m_currentReply, &QNetworkReply::readyRead, &loop, [&]() {
+                sseBuffer += m_currentReply->readAll();
+                int nl = 0;
+                while ((nl = sseBuffer.indexOf('\n')) >= 0) {
+                    const QByteArray line = sseBuffer.left(nl);
+                    sseBuffer.remove(0, nl + 1);
+                    processSseLine(line);
+                }
+            });
+
+            loop.exec();
+
+            const bool netFailed = (m_currentReply->error() != QNetworkReply::NoError) && !m_aborted;
+            const int statusCode = m_currentReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            const QByteArray bodyBytes = m_currentReply->readAll();
+            m_currentReply = nullptr;
+
+            if (m_aborted) {
+                emit errorOccurred(tr("Generation stopped"));
+                break;
+            }
+            if (netFailed) {
+                emit errorOccurred(tr("AI request failed: %1").arg(failReason.isEmpty() ? QString() : failReason));
+                break;
+            }
+            if (statusCode >= 400 && content.isEmpty()) {
+                auto bodyDoc = QJsonDocument::fromJson(bodyBytes);
+                QString detail;
+                if (bodyDoc.isObject()) {
+                    const auto err = bodyDoc["error"];
+                    if (err.isObject()) {
+                        detail = err.toObject()["message"].toString();
+                    } else if (err.isString()) {
+                        detail = err.toString();
+                    }
+                }
+                if (detail.isEmpty()) {
+                    detail = QStringLiteral("HTTP %1").arg(statusCode);
+                }
+                emit errorOccurred(tr("AI request failed: %1").arg(detail));
+                break;
+            }
+            if (!streamDone && content.isEmpty() && !gotToolCalls) {
+                emit errorOccurred(tr("The connection was closed before the response finished"));
+                break;
+            }
+
+            // build the assistant message
+            QJsonObject msg{ { "role", "assistant" } };
+            if (!content.isEmpty()) {
+                msg["content"] = content;
+            }
+            QJsonArray calls;
+            if (gotToolCalls) {
+                for (auto it = toolAcc.constBegin(); it != toolAcc.constEnd(); ++it) {
+                    auto entry = it.value();
+                    if (!entry.contains("id")) {
+                        entry["id"] = QStringLiteral("call_%1").arg(it.key());
+                    }
+                    entry["type"] = "function";
+                    calls.append(entry);
+                }
+                msg["tool_calls"] = calls;
+            }
+            m_history.append(msg);
+            emit streamFinished(gotToolCalls, content);
+
+            if (gotToolCalls) {
+                for (const auto& callValue : calls) {
+                    const auto call = callValue.toObject();
+                    const QString callId = call["id"].toString();
+                    const QString toolName = call["function"]["name"].toString();
+                    const QString argsJson = call["function"]["arguments"].toString();
+                    QJsonObject args;
+                    auto argsDoc = QJsonDocument::fromJson(argsJson.toUtf8());
+                    if (argsDoc.isObject()) {
+                        args = argsDoc.object();
+                    }
+                    emit toolStarted(toolName, toolSummary(toolName, args));
+                    auto result = executeTool(toolName, args);
+                    emit toolFinished(toolName, result.text.left(300), result.ok);
+                    m_history.append(QJsonObject{ { "role", "tool" },
+                                                  { "tool_call_id", callId },
+                                                  { "content", result.text } });
+                }
+                continue;  // next iteration streams the follow-up
+            }
+            if (!content.isEmpty()) {
+                finished = true;
+                break;
+            }
+            emit errorOccurred(tr("The model returned an empty response"));
+            break;
+        }
+    } while (false);
+
+    saveHistory();
+    m_busy = false;
+    emit busyChanged(false);
+}
+
+void AiAssistant::abortGeneration()
+{
+    m_aborted = true;
+    if (m_currentReply) {
+        m_currentReply->abort();
+    }
+}
+
+void AiAssistant::resetConversation()
+{
+    m_history.clear();
+    saveHistory();
+}
+
+void AiAssistant::loadHistory()
+{
+    const QString path = FS::PathCombine(APPLICATION->dataRoot(), "ai-chat.json");
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return;
+    }
+    auto doc = QJsonDocument::fromJson(file.readAll());
+    m_history.clear();
+    for (const auto& v : doc.array()) {
+        if (v.isObject()) {
+            m_history.append(v.toObject());
+        }
+    }
+}
+
+void AiAssistant::saveHistory()
+{
+    QJsonArray arr;
+    for (const auto& m : m_history) {
+        arr.append(m);
+    }
+    FS::ensureFolderPathExists(APPLICATION->dataRoot());
+    QFile file(FS::PathCombine(APPLICATION->dataRoot(), "ai-chat.json"));
+    if (!file.open(QIODevice::WriteOnly)) {
+        return;
+    }
+    file.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+    file.close();
+}
 
 bool AiAssistant::fetchModelIds(const QString& baseUrl, const QString& apiKey, QStringList* free,
                                 QStringList* paid, QString* error)
@@ -416,175 +802,6 @@ QString AiAssistant::resolveModel(const QString& baseUrl, const QString& apiKey,
     return chat.first();
 }
 
-void AiAssistant::sendUserMessage(const QString& message)
-{
-    if (m_busy) {
-        return;
-    }
-    m_busy = true;
-    emit busyChanged(true);
-
-    aiSettings();  // ensure the settings exist
-    const QString baseUrl = APPLICATION->settings()->get("AiApiBaseUrl").toString().trimmed();
-    const QString apiKey = APPLICATION->settings()->get("AiApiKey").toString().trimmed();
-    const QString model = APPLICATION->settings()->get("AiModel").toString().trimmed();
-
-    do {
-        if (apiKey.isEmpty() && !baseUrl.isEmpty()) {
-            emit errorOccurred(tr("No API key configured. Enter a key in the AI settings (OpenRouter needs a key even for free "
-                                   "models), or point the base URL at a local server that does not require one."));
-            break;
-        }
-
-        m_history.append(AiChatMessage::make("user", message));
-
-        QString resolveError;
-        const QString actualModel = resolveModel(baseUrl, apiKey, model, &resolveError);
-        if (actualModel.isEmpty()) {
-            emit errorOccurred(tr("Failed to resolve the model: %1").arg(resolveError));
-            break;
-        }
-
-        bool finished = false;
-        for (int iteration = 0; iteration < MAX_TOOL_ITERATIONS && !finished; ++iteration) {
-            QJsonArray messages;
-            messages.append(AiChatMessage::make("system", systemPrompt()).raw);
-            for (const auto& msg : m_history) {
-                messages.append(msg.raw);
-            }
-
-            QJsonObject body{ { "model", actualModel },
-                              { "messages", messages },
-                              { "tools", toolSpecs() },
-                              { "temperature", 0.2 } };
-            QStringList headers;
-            if (!apiKey.isEmpty()) {
-                headers << QStringLiteral("Authorization: Bearer %1").arg(apiKey);
-            }
-            if (isOpenRouter(baseUrl)) {
-                headers << QStringLiteral("HTTP-Referer: https://github.com/PrismLauncher/PrismLauncher");
-                headers << QStringLiteral("X-Title: Prism Launcher");
-            }
-            auto reply = httpRequest("POST",
-                                     QStringLiteral("%1/chat/completions").arg(baseUrl),
-                                     QJsonDocument(body).toJson(QJsonDocument::Compact),
-                                     headers, 300000);
-            if (!reply.ok) {
-                QString detail = reply.error;
-                auto doc = QJsonDocument::fromJson(reply.body);
-                if (doc.isObject()) {
-                    const auto err = doc["error"];
-                    if (err.isObject()) {
-                        detail = err.toObject()["message"].toString(detail);
-                    }
-                }
-                emit errorOccurred(tr("AI request failed: %1").arg(detail));
-                break;
-            }
-
-            auto doc = QJsonDocument::fromJson(reply.body);
-            if (!doc.isObject()) {
-                emit errorOccurred(tr("AI returned an unexpected response"));
-                break;
-            }
-            const auto choice = doc["choices"].toArray().at(0).toObject();
-            const auto msg = choice["message"].toObject();
-            const auto toolCalls = msg["tool_calls"].toArray();
-
-            if (toolCalls.isEmpty()) {
-                const QString text = msg["content"].toString();
-                m_history.append(AiChatMessage::make("assistant", text));
-                emit assistantReply(text);
-                finished = true;
-                break;
-            }
-
-            // store the assistant message with the tool calls, then execute
-            m_history.append(AiChatMessage{ msg });
-            for (const auto& callValue : toolCalls) {
-                const auto call = callValue.toObject();
-                const QString callId = call["id"].toString();
-                const QString toolName = call["function"]["name"].toString();
-                const QString argsJson = call["function"]["arguments"].toString();
-
-                QJsonObject args;
-                auto argsDoc = QJsonDocument::fromJson(argsJson.toUtf8());
-                if (argsDoc.isObject()) {
-                    args = argsDoc.object();
-                }
-
-                emit toolStarted(toolName, toolSummary(toolName, args));
-                auto result = executeTool(toolName, args);
-                emit toolFinished(toolName, result.text.left(300), result.ok);
-
-                m_history.append(AiChatMessage{ QJsonObject{ { "role", "tool" },
-                                                              { "tool_call_id", callId },
-                                                              { "content", result.text } } });
-            }
-        }
-        if (!finished) {
-            emit errorOccurred(tr("The assistant stopped after too many tool calls"));
-        }
-    } while (false);
-
-    m_busy = false;
-    emit busyChanged(false);
-}
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-MinecraftInstance* AiAssistant::findInstance(const QString& idOrName) const
-{
-    auto* instances = APPLICATION->instances();
-    if (auto* inst = instances->getInstanceById(idOrName)) {
-        return inst;
-    }
-    // exact name, then case-insensitive substring
-    for (int i = 0; i < instances->count(); ++i) {
-        auto* inst = instances->at(i);
-        if (inst->name().compare(idOrName, Qt::CaseInsensitive) == 0) {
-            return inst;
-        }
-    }
-    for (int i = 0; i < instances->count(); ++i) {
-        auto* inst = instances->at(i);
-        if (inst->name().contains(idOrName, Qt::CaseInsensitive)) {
-            return inst;
-        }
-    }
-    return nullptr;
-}
-
-QString AiAssistant::loaderUid(const QString& loader)
-{
-    if (loader == "fabric")
-        return "net.fabricmc.fabric-loader";
-    if (loader == "quilt")
-        return "org.quiltmc.quilt-loader";
-    if (loader == "forge")
-        return "net.minecraftforge";
-    if (loader == "neoforge")
-        return "net.neoforged";
-    return {};
-}
-
-QString AiAssistant::instanceMcVersion(MinecraftInstance* inst) const
-{
-    return inst->getPackProfile()->getComponentVersion("net.minecraft");
-}
-
-QString AiAssistant::instanceLoaderUid(MinecraftInstance* inst) const
-{
-    for (const QString& uid : { "net.fabricmc.fabric-loader", "org.quiltmc.quilt-loader", "net.minecraftforge", "net.neoforged" }) {
-        if (!inst->getPackProfile()->getComponentVersion(uid).isEmpty()) {
-            return uid;
-        }
-    }
-    return {};
-}
-
 // ---------------------------------------------------------------------------
 // tools
 // ---------------------------------------------------------------------------
@@ -598,19 +815,10 @@ AiToolResult AiAssistant::toolListInstances()
     QStringList lines;
     for (int i = 0; i < instances->count(); ++i) {
         auto* inst = instances->at(i);
-        QString loader;
-        const auto uid = instanceLoaderUid(inst);
-        if (uid == "net.fabricmc.fabric-loader")
-            loader = "Fabric";
-        else if (uid == "org.quiltmc.quilt-loader")
-            loader = "Quilt";
-        else if (uid == "net.minecraftforge")
-            loader = "Forge";
-        else if (uid == "net.neoforged")
-            loader = "NeoForge";
+        const auto loader = loaderDisplayName(instanceLoaderUid(inst));
         lines << QStringLiteral("- id=%1 | name=%2 | MC %3%4")
                      .arg(inst->id(), inst->name(), instanceMcVersion(inst),
-                          loader.isEmpty() ? QString() : QStringLiteral(" | %1").arg(loader));
+                          loader.isEmpty() ? QString() : QStringLiteral(" | %1").arg(loader)));
     }
     return { true, lines.join(u'\n') };
 }
@@ -665,11 +873,8 @@ AiToolResult AiAssistant::toolCreateInstance(const QString& name,
             auto listPtr = meta->get(uid);
             auto loadTask = listPtr->getLoadTask();
             auto error = syncRunTask(loadTask.get());
-            if (!error.isEmpty() && listPtr->count() == 0) {
-                return { false, tr("Failed to load %1 versions: %2").arg(loader, error) };
-            }
             if (listPtr->count() == 0) {
-                return { false, tr("No %1 versions available").arg(loader) };
+                return { false, tr("Failed to load %1 versions: %2").arg(loader, error) };
             }
             loaderVer = listPtr->at(0);
         }
@@ -789,7 +994,7 @@ AiToolResult AiAssistant::toolContentVersions(const QString& projectId, const QS
         auto file = primaryFileOfVersion(obj);
         lines << QStringLiteral("- id=%1 | %2 | MC %3 | %4")
                      .arg(obj["id"].toString(), obj["version_number"].toString(),
-                          QJsonArray(obj["game_versions"].toArray()).isEmpty()
+                          obj["game_versions"].toArray().isEmpty()
                               ? "?"
                               : obj["game_versions"].toArray().last().toString(),
                           file ? file->second : QString("?"));
@@ -887,6 +1092,7 @@ AiToolResult AiAssistant::toolInstallContent(const QString& idOrName,
                  tr("No compatible version of the project '%1' for Minecraft %2 was found")
                      .arg(projectId, mcVersion.isEmpty() ? tr("(unknown)") : mcVersion) };
     }
+
     auto file = primaryFileOfVersion(chosen);
     if (!file) {
         return { false, tr("The version has no downloadable files") };
@@ -902,10 +1108,8 @@ AiToolResult AiAssistant::toolInstallContent(const QString& idOrName,
         return { false, tr("Download failed: %1").arg(reply.error) };
     }
 
-    // validate the sha1 if provided by the version entry
     return { true,
-             tr("Installed %1 into %2 (version %3)")
-                 .arg(file->second, targetDir, chosen["version_number"].toString()) };
+             tr("Installed %1 into %2 (version %3)").arg(file->second, targetDir, chosen["version_number"].toString()) };
 }
 
 AiToolResult AiAssistant::toolSetInstanceSettings(const QString& idOrName, const QJsonObject& changes)

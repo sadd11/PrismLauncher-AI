@@ -1,0 +1,66 @@
+name: AI Build (Windows)
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      build-type:
+        description: Build type
+        type: string
+        default: Release
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build (Windows-MSVC-AI)
+    runs-on: windows-2022
+
+    env:
+      BUILD_TYPE: ${{ inputs.build-type || 'Release' }}
+      CMAKE_PRESET: ci
+      VCPKG_TRIPLET: x64-windows
+      ARTIFACT_NAME: Windows-MSVC-AI
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Setup dependencies
+        id: setup-dependencies
+        uses: ./.github/actions/setup-dependencies
+        with:
+          build-type: ${{ env.BUILD_TYPE }}
+          artifact-name: ${{ env.ARTIFACT_NAME }}
+          vcvars-arch: amd64
+          qt-version: 6.11.2
+
+      - name: Configure project
+        run: |
+          cmake --preset "$CMAKE_PRESET" -D VCPKG_HOST_TRIPLET="$VCPKG_TRIPLET" -D VCPKG_TARGET_TRIPLET="$VCPKG_TRIPLET"
+
+      - name: Run build
+        run: |
+          cmake --build --preset "$CMAKE_PRESET" --config "$BUILD_TYPE"
+
+      - name: Install
+        shell: pwsh
+        env:
+          BUILD_DIR: build
+          INSTALL_DIR: install
+        run: |
+          cmake --install ${{ env.BUILD_DIR }} --config ${{ env.BUILD_TYPE }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}-${{ env.BUILD_TYPE }}
+          path: install/
+          if-no-files-found: error

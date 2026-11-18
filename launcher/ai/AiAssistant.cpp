@@ -565,7 +565,7 @@ void AiAssistant::sendUserMessage(const QString& message)
 
             QObject::connect(m_currentReply, &QNetworkReply::readyRead, &loop, [&]() {
                 sseBuffer += m_currentReply->readAll();
-                int nl = 0;
+                qsizetype nl = 0;
                 while ((nl = sseBuffer.indexOf('\n')) >= 0) {
                     const QByteArray line = sseBuffer.left(nl);
                     sseBuffer.remove(0, nl + 1);

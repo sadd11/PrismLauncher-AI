@@ -68,12 +68,12 @@ QString markdownToHtml(const QString& text)
     doc.setMarkdown(text, QTextDocument::MarkdownDialectGitHub);
     QString html = doc.toHtml();
     // extract the body contents so it can be appended into the log
-    int start = html.indexOf("<body", 0, Qt::CaseInsensitive);
+    const auto start = static_cast<qsizetype>(html.indexOf("<body", 0, Qt::CaseInsensitive));
     if (start < 0) {
         return text.toHtmlEscaped().replace('\n', QStringLiteral("<br>"));
     }
-    start = html.indexOf(u'>', start) + 1;
-    int end = html.lastIndexOf("</body>", -1, Qt::CaseInsensitive);
+    start = static_cast<qsizetype>(html.indexOf(u'>', start)) + 1;
+    const auto end = static_cast<qsizetype>(html.lastIndexOf("</body>", -1, Qt::CaseInsensitive));
     if (end < start) {
         return text.toHtmlEscaped().replace('\n', QStringLiteral("<br>"));
     }
@@ -152,6 +152,7 @@ AiAssistantDialog::AiAssistantDialog(QWidget* parent) : QDialog(parent)
     inputRow->addWidget(m_sendButton);
     m_stopButton = new QPushButton(tr("Stop"), this);
     m_stopButton->setEnabled(false);
+    connect(m_stopButton, &QPushButton::clicked, this, [this] { m_assistant.abortGeneration(); });
     inputRow->addWidget(m_stopButton);
     auto* resetButton = new QPushButton(tr("New chat"), this);
     inputRow->addWidget(resetButton);
@@ -287,7 +288,7 @@ QString AiAssistantDialog::renderAssistantText(const QString& text) const
 void AiAssistantDialog::reloadHistoryDisplay()
 {
     const auto& history = m_assistant.history();
-    const int start = qMax(0, history.size() - 40);
+    const auto start = static_cast<int>(qMax<qsizetype>(0, history.size() - 40));
     for (int i = start; i < history.size(); ++i) {
         const auto& msg = history.at(i);
         const QString role = msg["role"].toString();

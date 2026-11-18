@@ -22,6 +22,7 @@
 #include "meta/VersionList.h"
 #include "meta/Version.h"
 #include "minecraft/MinecraftInstance.h"
+#include "minecraft/PackProfile.h"
 #include "minecraft/VanillaInstanceCreationTask.h"
 #include "modplatform/modrinth/ModrinthInstanceCreationTask.h"
 
@@ -86,21 +87,22 @@ QString modrinthProjectType(const QString& contentType)
 std::optional<std::pair<QString, QString>> primaryFileOfVersion(const QJsonObject& version)
 {
     const auto files = version["files"].toArray();
-    const QJsonObject* chosen = nullptr;
+    QJsonObject chosen;
+    bool found = false;
     for (const auto& f : files) {
-        auto obj = f.toObject();
-        if (obj["primary"].toBool()) {
-            chosen = &obj;
+        chosen = f.toObject();
+        if (chosen["primary"].toBool()) {
+            found = true;
             break;
         }
     }
-    if (!chosen && !files.isEmpty()) {
-        chosen = &files.first().toObject();
+    if (!found && !files.isEmpty()) {
+        chosen = files.first().toObject();
     }
-    if (!chosen) {
+    if (!found) {
         return std::nullopt;
     }
-    return std::make_pair((*chosen)["url"].toString(), (*chosen)["filename"].toString());
+    return std::make_pair(chosen["url"].toString(), chosen["filename"].toString());
 }
 
 }  // namespace
@@ -222,7 +224,7 @@ QString AiAssistant::toolSummary(const QString& name, const QJsonObject& args) c
     for (auto it = args.begin(); it != args.end(); ++it) {
         parts << QStringLiteral("%1=%2").arg(it.key(), it.value().toVariant().toString());
     }
-    return QStringLiteral("%1(%2)").arg(name, parts.join(u', '));
+    return QStringLiteral("%1(%2)").arg(name, parts.join(u','));
 }
 
 // ---------------------------------------------------------------------------
@@ -605,7 +607,7 @@ AiToolResult AiAssistant::toolListInstances()
             loader = "NeoForge";
         lines << QStringLiteral("- id=%1 | name=%2 | MC %3%4")
                      .arg(inst->id(), inst->name(), instanceMcVersion(inst),
-                          loader.isEmpty() ? QString() : QStringLiteral(" | %1").arg(loader)));
+                          loader.isEmpty() ? QString() : QStringLiteral(" | %1").arg(loader));
     }
     return { true, lines.join(u'\n') };
 }
@@ -755,8 +757,7 @@ AiToolResult AiAssistant::toolSearchContent(const QString& query, const QString&
                      .arg(obj["project_type"].toString(), obj["title"].toString(), obj["project_id"].toString(),
                           obj["slug"].toString(), obj["downloads"].toVariant().toString(), obj["description"].toString());
     }
-    return { true, lines.join(u'
-') };
+    return { true, lines.join(u'\n') };
 }
 
 AiToolResult AiAssistant::toolContentVersions(const QString& projectId, const QString& mcVersion, const QString& loader)
@@ -887,8 +888,6 @@ AiToolResult AiAssistant::toolInstallContent(const QString& idOrName,
                  tr("No compatible version of the project '%1' for Minecraft %2 was found")
                      .arg(projectId, mcVersion.isEmpty() ? tr("(unknown)") : mcVersion) };
     }
-    chosenId = chosen["id"].toString();
-
     auto file = primaryFileOfVersion(chosen);
     if (!file) {
         return { false, tr("The version has no downloadable files") };

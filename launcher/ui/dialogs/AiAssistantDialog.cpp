@@ -19,6 +19,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QScrollBar>
+#include <QTextBrowser>
 #include <QTextEdit>
 #include <QToolButton>
 #include <QVBoxLayout>

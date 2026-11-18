@@ -87,20 +87,16 @@ QString modrinthProjectType(const QString& contentType)
 std::optional<std::pair<QString, QString>> primaryFileOfVersion(const QJsonObject& version)
 {
     const auto files = version["files"].toArray();
-    QJsonObject chosen;
-    bool found = false;
+    if (files.isEmpty()) {
+        return std::nullopt;
+    }
+    QJsonObject chosen = files.first().toObject();
     for (const auto& f : files) {
-        chosen = f.toObject();
-        if (chosen["primary"].toBool()) {
-            found = true;
+        auto obj = f.toObject();
+        if (obj["primary"].toBool()) {
+            chosen = obj;
             break;
         }
-    }
-    if (!found && !files.isEmpty()) {
-        chosen = files.first().toObject();
-    }
-    if (!found) {
-        return std::nullopt;
     }
     return std::make_pair(chosen["url"].toString(), chosen["filename"].toString());
 }
@@ -231,7 +227,8 @@ QString AiAssistant::toolSummary(const QString& name, const QJsonObject& args) c
 // HTTP plumbing (synchronous with a local event loop)
 // ---------------------------------------------------------------------------
 
-AiAssistant::HttpReply AiAssistant::httpRequest(const QString& method, const QString& url, const QByteArray& body, int timeoutMs)
+AiAssistant::HttpReply AiAssistant::httpRequest(const QString& method, const QString& url, const QByteArray& body,
+                                                 const QStringList& headers, int timeoutMs)
 {
     QNetworkRequest request((QUrl(url)));
     request.setTransferTimeout(timeoutMs);
@@ -240,6 +237,12 @@ AiAssistant::HttpReply AiAssistant::httpRequest(const QString& method, const QSt
     request.setRawHeader("User-Agent", QString("%1/%2 (AI assistant)")
                                             .arg(BuildConfig.LAUNCHER_DISPLAYNAME, BuildConfig.printableVersionString())
                                             .toUtf8());
+    for (const auto& header : headers) {
+        const auto pair = header.split(u':');
+        if (pair.size() == 2) {
+            request.setRawHeader(pair[0].trimmed().toUtf8(), pair[1].trimmed().toUtf8());
+        }
+    }
 
     QNetworkReply* reply = nullptr;
     if (method == "POST") {
@@ -465,7 +468,7 @@ void AiAssistant::sendUserMessage(const QString& message)
             auto reply = httpRequest("POST",
                                      QStringLiteral("%1/chat/completions").arg(baseUrl),
                                      QJsonDocument(body).toJson(QJsonDocument::Compact),
-                                     300000);
+                                     headers, 300000);
             if (!reply.ok) {
                 QString detail = reply.error;
                 auto doc = QJsonDocument::fromJson(reply.body);
@@ -862,9 +865,6 @@ AiToolResult AiAssistant::toolInstallContent(const QString& idOrName,
     } else if (!mcVersion.isEmpty() && contentType != "shader") {
         // resource packs/datapacks also carry game_versions
         facets << QStringLiteral("game_versions==[\"%1\"]").arg(mcVersion);
-    }
-    if (!versionId.isEmpty()) {
-        path = QStringLiteral("/project/%1/version").arg(projectId);
     }
     if (!facets.isEmpty()) {
         path += QStringLiteral("?facets=[%1]").arg(QStringList{ facets }.join(u','));

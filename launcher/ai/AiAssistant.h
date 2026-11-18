@@ -11,6 +11,7 @@
 #pragma once
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QObject>
 #include <QString>
@@ -93,7 +94,8 @@ class AiAssistant : public QObject {
         QByteArray body;
     };
 
-    HttpReply httpRequest(const QString& method, const QString& url, const QByteArray& body, int timeoutMs);
+    HttpReply httpRequest(const QString& method, const QString& url, const QByteArray& body,
+                          const QStringList& headers, int timeoutMs);
     HttpReply httpGet(const QString& url, int timeoutMs = 180000);
     HttpReply httpDownload(const QString& url, const QString& targetPath);
     QJsonDocument modrinthGet(const QString& path);

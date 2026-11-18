@@ -12,6 +12,7 @@
 
 #include "ai/AiAssistant.h"
 #include "Application.h"
+#include "settings/SettingsObject.h"
 
 #include <QComboBox>
 #include <QHBoxLayout>

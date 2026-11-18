@@ -15,6 +15,9 @@
 #include "BaseVersion.h"
 #include "FileSystem.h"
 #include "InstanceList.h"
+#include "meta/Index.h"
+#include "meta/VersionList.h"
+#include "meta/Version.h"
 #include "minecraft/auth/AccountList.h"
 #include "minecraft/MinecraftInstance.h"
 #include "minecraft/PackProfile.h"
@@ -389,7 +392,7 @@ QString AiAssistant::currentLauncherState() const
             const auto loader = loaderDisplayName(instanceLoaderUid(inst));
             lines << QStringLiteral("- id=%1 | name=%2 | MC %3%4")
                          .arg(inst->id(), inst->name(), instanceMcVersion(inst),
-                              loader.isEmpty() ? QString() : QStringLiteral(" | %1").arg(loader)));
+                              loader.isEmpty() ? QString() : QStringLiteral(" | %1").arg(loader));
         }
     }
     auto* accounts = APPLICATION->accounts();

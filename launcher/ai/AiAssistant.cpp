@@ -271,7 +271,7 @@ AiAssistant::HttpReply AiAssistant::httpRequest(const QString& method, const QSt
 
 AiAssistant::HttpReply AiAssistant::httpGet(const QString& url, int timeoutMs)
 {
-    return httpRequest("GET", url, {}, timeoutMs);
+    return httpRequest("GET", url, {}, {}, timeoutMs);
 }
 
 AiAssistant::HttpReply AiAssistant::httpDownload(const QString& url, const QString& targetPath)

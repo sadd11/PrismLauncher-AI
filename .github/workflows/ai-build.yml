@@ -21,6 +21,10 @@ jobs:
     name: Build (Windows-MSVC-AI)
     runs-on: windows-2022
 
+    defaults:
+      run:
+        shell: bash
+
     env:
       BUILD_TYPE: ${{ inputs.build-type || 'Release' }}
       CMAKE_PRESET: ci

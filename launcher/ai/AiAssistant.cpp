@@ -1174,8 +1174,7 @@ AiToolResult AiAssistant::toolSearchContent(const QString& query, const QString&
                          .arg(obj["name"].toString(), obj["id"].toVariant().toString(),
                               obj["downloadCount"].toVariant().toString(), obj["summary"].toString());
         }
-        return { true, lines.join(u'
-') };
+        return { true, lines.join(u'\n') };
     }
 
     const QString projectType = modrinthProjectType(contentType);

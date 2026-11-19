@@ -69,6 +69,35 @@ QJsonDocument modrinthGet(const QString& path)
     return QJsonDocument::fromJson(body);
 }
 
+bool downloadToFile(const QString& url, const QString& targetPath)
+{
+    QNetworkRequest request((QUrl(url)));
+    request.setTransferTimeout(600000);
+    request.setRawHeader("User-Agent", QString("%1/%2 (AI assistant)")
+                                            .arg(BuildConfig.LAUNCHER_DISPLAYNAME, BuildConfig.printableVersionString())
+                                            .toUtf8());
+    auto* nam = new QNetworkAccessManager();
+    QEventLoop loop;
+    QTimer::singleShot(600000, &loop, &QEventLoop::quit);
+    auto* reply = nam->get(request);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const bool ok = reply->error() == QNetworkReply::NoError;
+    const QByteArray body = reply->readAll();
+    reply->deleteLater();
+    nam->deleteLater();
+    if (!ok) {
+        return false;
+    }
+    QFile file(targetPath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+    file.write(body);
+    file.close();
+    return true;
+}
+
 bool sha512Matches(const QString& filePath, const QString& expected)
 {
     if (expected.isEmpty()) {

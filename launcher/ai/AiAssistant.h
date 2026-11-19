@@ -139,6 +139,15 @@ class AiAssistant : public QObject {
     AiToolResult toolSetInstanceSettings(const QString& idOrName, const QJsonObject& changes);
     AiToolResult toolListMinecraftVersions();
     AiToolResult toolListLoaderVersions(const QString& loader);
+    AiToolResult toolGetCrashReports(const QString& idOrName);
+    AiToolResult toolReadCrashReport(const QString& idOrName, const QString& filename);
+    AiToolResult toolGetGameLog(const QString& idOrName, int tail);
+    AiToolResult toolListCatpacks();
+    AiToolResult toolSetCatpack(const QString& name);
+    AiToolResult toolListWorlds(const QString& idOrName);
+    AiToolResult toolDeleteWorld(const QString& idOrName, const QString& world);
+    AiToolResult toolBackupWorld(const QString& idOrName, const QString& world);
+    AiToolResult toolUpdateAllMods(const QString& idOrName);
 
     AiToolResult executeTool(const QString& name, const QJsonObject& args);
 

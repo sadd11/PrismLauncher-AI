@@ -22,6 +22,10 @@
 #include "minecraft/MinecraftInstance.h"
 #include "minecraft/PackProfile.h"
 #include "minecraft/VanillaInstanceCreationTask.h"
+#include "minecraft/World.h"
+#include "minecraft/WorldList.h"
+#include "minecraft/WorldTasks.h"
+#include "modplatform/ModUpdater.h"
 #include "modplatform/modrinth/ModrinthInstanceCreationTask.h"
 #include "settings/SettingsObject.h"
 #include "tasks/Task.h"
@@ -207,6 +211,37 @@ QJsonArray AiAssistant::toolSpecs()
            "List available versions of a mod loader.",
            { { "loader", enumType("Loader", { "fabric", "quilt", "forge", "neoforge" }) } },
            { "loader" }),
+        fn("get_crash_reports",
+           "List crash report files of an instance (newest first).",
+           { { "instance", str("Instance id or name") } },
+           { "instance" }),
+        fn("read_crash_report",
+           "Read a crash report (the newest one if filename is omitted).",
+           { { "instance", str("Instance id or name") },
+             { "filename", str("Crash report filename; omit for the newest") } },
+           { "instance" }),
+        fn("get_game_log",
+           "Return the tail of the Minecraft game log (logs/latest.log).",
+           { { "instance", str("Instance id or name") },
+             { "tail", intType("How many last lines to return (default 200)") } },
+           { "instance" }),
+        fn("list_catpacks", "List available catpacks and the currently selected one.", {}, {}),
+        fn("set_catpack", "Select a catpack by name (or id).", { { "name", str("Catpack name or id") } },
+           { "name" }),
+        fn("list_worlds", "List saved worlds of an instance.", { { "instance", str("Instance id or name") } },
+           { "instance" }),
+        fn("delete_world",
+           "Delete a saved world permanently (destructive!).",
+           { { "instance", str("Instance id or name") }, { "world", str("World name") } },
+           { "instance", "world" }),
+        fn("backup_world",
+           "Create a backup copy of a world into the instance backups folder.",
+           { { "instance", str("Instance id or name") }, { "world", str("World name") } },
+           { "instance", "world" }),
+        fn("update_all_mods",
+           "Update all Modrinth-hosted mods of an instance to their latest versions.",
+           { { "instance", str("Instance id or name") } },
+           { "instance" }),
     };
 }
 
@@ -1197,6 +1232,173 @@ AiToolResult AiAssistant::toolListLoaderVersions(const QString& loader)
     return { true, lines.join(u'\n') };
 }
 
+AiToolResult AiAssistant::toolGetCrashReports(const QString& idOrName)
+{
+    auto* inst = findInstance(idOrName);
+    if (!inst) {
+        return { false, tr("Instance '%1' not found").arg(idOrName) };
+    }
+    QDir crashDir(FS::PathCombine(inst->gameRoot(), "crash-reports"));
+    const auto infos = crashDir.entryInfoList(QStringList{ "*.txt" }, QDir::Files, QDir::Time | QDir::Reversed);
+    if (infos.isEmpty()) {
+        return { true, tr("No crash reports found in %1").arg(crashDir.path()) };
+    }
+    QStringList lines;
+    lines << tr("Crash reports (newest first):");
+    for (const auto& info : infos) {
+        lines << QStringLiteral("- %1 (%2 KB)").arg(info.fileName()).arg(info.size() / 1024);
+    }
+    return { true, lines.join(u'\n') };
+}
+
+AiToolResult AiAssistant::toolReadCrashReport(const QString& idOrName, const QString& filename)
+{
+    auto* inst = findInstance(idOrName);
+    if (!inst) {
+        return { false, tr("Instance '%1' not found").arg(idOrName) };
+    }
+    QDir crashDir(FS::PathCombine(inst->gameRoot(), "crash-reports"));
+    QString target;
+    if (filename.isEmpty()) {
+        const auto infos = crashDir.entryInfoList(QStringList{ "*.txt" }, QDir::Files, QDir::Time | QDir::Reversed);
+        if (infos.isEmpty()) {
+            return { false, tr("No crash reports found") };
+        }
+        target = infos.first().absoluteFilePath();
+    } else {
+        target = crashDir.filePath(filename);
+    }
+    QFile file(target);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return { false, tr("Cannot open %1").arg(target) };
+    }
+    // crash reports are large; cap at ~40 KB like the game log viewer
+    const QByteArray data = file.read(40 * 1024);
+    const QString text = QString::fromUtf8(data);
+    return { true, tr("Crash report %1:\n%2").arg(QFileInfo(target).fileName(), text) };
+}
+
+AiToolResult AiAssistant::toolGetGameLog(const QString& idOrName, int tail)
+{
+    auto* inst = findInstance(idOrName);
+    if (!inst) {
+        return { false, tr("Instance '%1' not found").arg(idOrName) };
+    }
+    QFile logFile(FS::PathCombine(inst->gameRoot(), "logs", "latest.log"));
+    if (!logFile.open(QIODevice::ReadOnly)) {
+        return { false, tr("No game log found at %1").arg(FS::PathCombine(inst->gameRoot(), "logs", "latest.log")) };
+    }
+    const QStringList lines = QString::fromUtf8(logFile.readAll()).split(u'\n');
+    const int count = tail > 0 ? qMin(tail, int(lines.size())) : 200;
+    QStringList out;
+    for (int i = lines.size() - count; i < lines.size(); ++i) {
+        out << lines.at(i);
+    }
+    return { true, out.join(u'\n') };
+}
+
+AiToolResult AiAssistant::toolListCatpacks()
+{
+    auto* themes = APPLICATION->themeManager();
+    const auto packs = themes->getValidCatPacks();
+    const QString current = APPLICATION->settings()->get("BackgroundCat").toString();
+    QStringList lines;
+    lines << tr("Current catpack: %1").arg(current);
+    for (auto* pack : packs) {
+        lines << QStringLiteral("- id=%1 | name=%2").arg(pack->id(), pack->name());
+    }
+    return { true, lines.join(u'\n') };
+}
+
+AiToolResult AiAssistant::toolSetCatpack(const QString& name)
+{
+    auto* themes = APPLICATION->themeManager();
+    // validate via getCatPack (falls back to the first pack on invalid names)
+    themes->getCatPack(name);
+    APPLICATION->settings()->set("BackgroundCat", name);
+    return { true, tr("Catpack set to '%1' (applies after theme refresh)").arg(name) };
+}
+
+AiToolResult AiAssistant::toolListWorlds(const QString& idOrName)
+{
+    auto* inst = findInstance(idOrName);
+    if (!inst) {
+        return { false, tr("Instance '%1' not found").arg(idOrName) };
+    }
+    WorldList worldList(QDir(inst->gameRoot()).filePath("saves"), inst);
+    worldList.update();
+    const auto worlds = worldList.allWorlds();
+    if (worlds.isEmpty()) {
+        return { true, tr("No worlds found") };
+    }
+    QStringList lines;
+    for (const auto& world : worlds) {
+        const QDateTime lastPlayed = world.lastPlayed();
+        lines << QStringLiteral("- %1 | played: %2 | %3 | seed %4")
+                     .arg(world.name(),
+                          lastPlayed.isValid() ? lastPlayed.toString("yyyy-MM-dd HH:mm") : tr("never"),
+                          world.gameType(),
+                          QString::number(world.seed()));
+    }
+    return { true, lines.join(u'\n') };
+}
+
+AiToolResult AiAssistant::toolDeleteWorld(const QString& idOrName, const QString& world)
+{
+    auto* inst = findInstance(idOrName);
+    if (!inst) {
+        return { false, tr("Instance '%1' not found").arg(idOrName) };
+    }
+    WorldList worldList(QDir(inst->gameRoot()).filePath("saves"), inst);
+    worldList.update();
+    for (auto& w : worldList.allWorlds()) {
+        if (w.name() == world || w.folderName() == world) {
+            const QString folder = w.container().absoluteFilePath();
+            if (w.destroy()) {
+                return { true, tr("Deleted world '%1' (%2)").arg(world, folder) };
+            }
+            return { false, tr("Failed to delete world '%1'").arg(world) };
+        }
+    }
+    return { false, tr("World '%1' not found in %2").arg(world, idOrName) };
+}
+
+AiToolResult AiAssistant::toolBackupWorld(const QString& idOrName, const QString& world)
+{
+    auto* inst = findInstance(idOrName);
+    if (!inst) {
+        return { false, tr("Instance '%1' not found").arg(idOrName) };
+    }
+    WorldList worldList(QDir(inst->gameRoot()).filePath("saves"), inst);
+    worldList.update();
+    for (auto& w : worldList.allWorlds()) {
+        if (w.name() == world || w.folderName() == world) {
+            const QString src = w.container().absoluteFilePath();
+            const QString backupRoot = FS::PathCombine(inst->gameRoot(), "backups");
+            FS::ensureFolderPathExists(backupRoot);
+            const QString backupPath =
+                FS::PathCombine(backupRoot, QStringLiteral("%1-%2").arg(w.folderName(), QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss")));
+            FS::copy folderCopy(src, backupPath);
+            folderCopy.followSymlinks(false).copyDirectories(true);
+            if (folderCopy()) {
+                return { true, tr("Backup created: %1").arg(backupPath) };
+            }
+            return { false, tr("Backup failed for '%1'").arg(world) };
+        }
+    }
+    return { false, tr("World '%1' not found").arg(world) };
+}
+
+AiToolResult AiAssistant::toolUpdateAllMods(const QString& idOrName)
+{
+    auto* inst = findInstance(idOrName);
+    if (!inst) {
+        return { false, tr("Instance '%1' not found").arg(idOrName) };
+    }
+    const auto summary = ModUpdater::updateInstanceModsSync(inst);
+    return { true, ModUpdater::summarize(summary) };
+}
+
 AiToolResult AiAssistant::executeTool(const QString& name, const QJsonObject& args)
 {
     if (name == "list_instances")
@@ -1224,5 +1426,23 @@ AiToolResult AiAssistant::executeTool(const QString& name, const QJsonObject& ar
         return toolListMinecraftVersions();
     if (name == "list_loader_versions")
         return toolListLoaderVersions(args["loader"].toString());
+    if (name == "get_crash_reports")
+        return toolGetCrashReports(args["instance"].toString());
+    if (name == "read_crash_report")
+        return toolReadCrashReport(args["instance"].toString(), args["filename"].toString());
+    if (name == "get_game_log")
+        return toolGetGameLog(args["instance"].toString(), args["tail"].toInt());
+    if (name == "list_catpacks")
+        return toolListCatpacks();
+    if (name == "set_catpack")
+        return toolSetCatpack(args["name"].toString());
+    if (name == "list_worlds")
+        return toolListWorlds(args["instance"].toString());
+    if (name == "delete_world")
+        return toolDeleteWorld(args["instance"].toString(), args["world"].toString());
+    if (name == "backup_world")
+        return toolBackupWorld(args["instance"].toString(), args["world"].toString());
+    if (name == "update_all_mods")
+        return toolUpdateAllMods(args["instance"].toString());
     return { false, tr("Unknown tool '%1'").arg(name) };
 }

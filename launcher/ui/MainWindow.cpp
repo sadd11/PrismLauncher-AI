@@ -45,6 +45,9 @@
 #include "MainWindow.h"
 #include "ui_MainWindow.h"
 #include "ui/dialogs/AiAssistantDialog.h"
+#include "ui/dialogs/WorldManagerDialog.h"
+#include <QtConcurrent>
+#include "modplatform/ModUpdater.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -275,6 +278,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui(new Ui::MainWi
         aiAction->setToolTip(tr("Open the AI assistant"));
         ui->mainToolBar->insertAction(ui->actionSettings, aiAction);
         connect(aiAction, &QAction::triggered, this, &MainWindow::openAiAssistant);
+    }
+
+    // Worlds manager + Update mods buttons
+    {
+        auto* worldsAction = new QAction(tr("Worlds"), this);
+        worldsAction->setToolTip(tr("Manage worlds of the selected instance"));
+        ui->mainToolBar->insertAction(ui->actionSettings, worldsAction);
+        connect(worldsAction, &QAction::triggered, this, &MainWindow::openWorldManager);
+
+        auto* updateModsAction = new QAction(tr("Update mods"), this);
+        updateModsAction->setToolTip(tr("Update all Modrinth mods of the selected instance"));
+        ui->mainToolBar->insertAction(ui->actionSettings, updateModsAction);
+        connect(updateModsAction, &QAction::triggered, this, &MainWindow::updateSelectedInstanceMods);
     }
 
     // Global shortcuts
@@ -890,6 +906,39 @@ void MainWindow::openAiAssistant()
     m_aiAssistantDialog->show();
     m_aiAssistantDialog->raise();
     m_aiAssistantDialog->activateWindow();
+}
+
+void MainWindow::openWorldManager()
+{
+    auto* instance = m_selectedInstance;
+    if (!instance) {
+        QMessageBox::warning(this, tr("Worlds"), tr("Select an instance first"));
+        return;
+    }
+    auto* dialog = new WorldManagerDialog(this, instance);
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
+
+void MainWindow::updateSelectedInstanceMods()
+{
+    if (!m_selectedInstance) {
+        return;
+    }
+    auto* progress = new QProgressDialog(tr("Updating mods…"), QString(), 0, 0, this);
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setCancelButton(nullptr);
+    progress->show();
+
+    auto* instance = m_selectedInstance;
+    QtConcurrent::run([instance]() -> QString {
+        const auto summary = ModUpdater::updateInstanceModsSync(instance);
+        return ModUpdater::summarize(summary);
+    }).then(this, [this, progress](const QString& summary) {
+        progress->deleteLater();
+        CustomMessageBox::selectable(this, tr("Update mods"), summary, QMessageBox::Information)->show();
+    });
 }
 
 void MainWindow::on_actionCopyInstance_triggered()

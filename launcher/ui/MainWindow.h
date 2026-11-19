@@ -238,6 +238,8 @@ class MainWindow : public QMainWindow {
     void instanceFromInstanceTask(InstanceTask* task);
 
     void openAiAssistant();
+    void openWorldManager();
+    void updateSelectedInstanceMods();
 
     void handleInstanceRename(const QString& before, const QString& after);
 

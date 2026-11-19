@@ -22,6 +22,7 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonParseError>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -44,7 +45,7 @@ struct VersionFile {
     QString sha512;
 };
 
-QJsonDocument modrinthGet(const QString& path)
+QJsonDocument modrinthGet(const QString& path, QString* error = nullptr)
 {
     QNetworkRequest request((QUrl(QStringLiteral("https://api.modrinth.com/v2%1").arg(path))));
     request.setTransferTimeout(180000);
@@ -61,15 +62,26 @@ QJsonDocument modrinthGet(const QString& path)
     loop.exec();
     const QByteArray body = reply->readAll();
     const bool ok = reply->error() == QNetworkReply::NoError;
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QString errorString = reply->errorString();
     reply->deleteLater();
     nam->deleteLater();
     if (!ok) {
+        if (error) {
+            *error = statusCode > 0 ? QStringLiteral("HTTP %1: %2").arg(statusCode).arg(QString::fromUtf8(body.left(300)))
+                                    : errorString;
+        }
         return {};
     }
-    return QJsonDocument::fromJson(body);
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+    if (parseError.error != QJsonParseError::NoError && error) {
+        *error = QStringLiteral("invalid JSON response: %1").arg(parseError.errorString());
+    }
+    return doc;
 }
 
-bool downloadToFile(const QString& url, const QString& targetPath)
+QString downloadToFile(const QString& url, const QString& targetPath)
 {
     QNetworkRequest request((QUrl(url)));
     request.setTransferTimeout(600000);
@@ -83,19 +95,21 @@ bool downloadToFile(const QString& url, const QString& targetPath)
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     loop.exec();
     const bool ok = reply->error() == QNetworkReply::NoError;
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QString errorString = reply->errorString();
     const QByteArray body = reply->readAll();
     reply->deleteLater();
     nam->deleteLater();
     if (!ok) {
-        return false;
+        return statusCode > 0 ? QStringLiteral("HTTP %1").arg(statusCode) : errorString;
     }
     QFile file(targetPath);
     if (!file.open(QIODevice::WriteOnly)) {
-        return false;
+        return QStringLiteral("cannot open %1 for writing").arg(targetPath);
     }
     file.write(body);
     file.close();
-    return true;
+    return {};
 }
 
 bool sha512Matches(const QString& filePath, const QString& expected)
@@ -154,7 +168,12 @@ UpdateSummary updateInstanceMods(MinecraftInstance* instance,
         const QString currentVersion = mod.version().toString();
 
         // versions compatible with any of the mod's declared MC versions
-        auto doc = modrinthGet(QStringLiteral("/project/%1/version").arg(projectId));
+        QString error;
+        auto doc = modrinthGet(QStringLiteral("/project/%1/version").arg(projectId), &error);
+        if (!error.isEmpty()) {
+            summary.failed << QObject::tr("%1: Modrinth request failed: %2").arg(slug, error);
+            continue;
+        }
         const auto versions = doc.array();
         if (versions.isEmpty()) {
             summary.upToDate << QObject::tr("%1: no versions found").arg(slug);
@@ -213,8 +232,9 @@ UpdateSummary updateInstanceMods(MinecraftInstance* instance,
 
         // download the new file
         const QString newFilePath = modsDir.filePath(latest->fileName);
-        if (!downloadToFile(latest->downloadUrl, newFilePath)) {
-            summary.failed << QObject::tr("%1: failed to download %2").arg(slug, latest->fileName);
+        const QString downloadError = downloadToFile(latest->downloadUrl, newFilePath);
+        if (!downloadError.isEmpty()) {
+            summary.failed << QObject::tr("%1: failed to download %2: %3").arg(slug, latest->fileName, downloadError);
             continue;
         }
         if (!sha512Matches(newFilePath, latest->sha512)) {

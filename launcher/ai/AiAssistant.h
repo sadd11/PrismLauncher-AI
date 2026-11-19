@@ -130,12 +130,16 @@ class AiAssistant : public QObject {
                                     const QString& group);
     AiToolResult toolDeleteInstance(const QString& idOrName);
     AiToolResult toolLaunchInstance(const QString& idOrName);
-    AiToolResult toolSearchContent(const QString& query, const QString& contentType, int limit);
+    AiToolResult toolSearchContent(const QString& query, const QString& contentType, int limit, const QString& provider = {});
     AiToolResult toolContentVersions(const QString& projectId, const QString& mcVersion, const QString& loader);
     AiToolResult toolInstallContent(const QString& idOrName,
                                     const QString& projectId,
                                     const QString& contentType,
-                                    const QString& versionId);
+                                    const QString& versionId,
+                                    const QString& provider = {});
+    AiToolResult toolUninstallMod(const QString& idOrName, const QString& name);
+    AiToolResult toolListScreenshots(const QString& idOrName, int limit);
+    AiToolResult toolUploadScreenshot(const QString& idOrName, const QString& name);
     AiToolResult toolSetInstanceSettings(const QString& idOrName, const QJsonObject& changes);
     AiToolResult toolListMinecraftVersions();
     AiToolResult toolListLoaderVersions(const QString& loader);

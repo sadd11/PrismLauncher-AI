@@ -223,6 +223,9 @@ AiAssistantDialog::AiAssistantDialog(QWidget* parent) : QDialog(parent)
         if (!hadToolCalls && !fullText.isEmpty()) {
             appendHtml(QStringLiteral("<b style='color:#9ece6a'>AI:</b> %1").arg(renderAssistantText(fullText)));
         }
+        if (!isActiveWindow()) {
+            QApplication::beep();  // let the user know the reply is ready
+        }
     });
     connect(&m_assistant, &AiAssistant::toolStarted, this, [this](const QString& tool, const QString& args) {
         m_statusLabel->setText(QStringLiteral("🔧 %1 %2…").arg(tool, args));

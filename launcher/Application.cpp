@@ -1592,6 +1592,7 @@ bool Application::launch(MinecraftInstance* instance,
         }
         connect(controller, &LaunchController::finished, this, &Application::controllerFinished);
         addRunningInstance();
+        QApplication::beep();  // audible cue that the game is starting
         QMetaObject::invokeMethod(controller, &Task::start, Qt::QueuedConnection);
         return true;
     } else if (instance->isRunning()) {

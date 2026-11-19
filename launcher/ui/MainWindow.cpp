@@ -52,6 +52,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QUrl>
+#include <QPainter>
 #include <QUrlQuery>
 #include <QVariant>
 
@@ -149,6 +150,36 @@ QString profileInUseFilter(const QString& profile, bool used)
     }
 }
 }  // namespace
+
+
+/// A chat-bubble-with-spark icon for the AI assistant button (theme-independent).
+static QIcon makeAiAssistantIcon()
+{
+    static QIcon cached;
+    if (!cached.isNull()) {
+        return cached;
+    }
+    const QColor fg = QApplication::palette().color(QPalette::WindowText);
+    const QColor bg = QApplication::palette().color(QPalette::Window);
+    QPixmap pm(64, 64);
+    pm.fill(Qt::transparent);
+    QPainter painter(&pm);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(Qt::NoPen);
+    // chat bubble
+    painter.setBrush(fg);
+    painter.drawRoundedRect(QRectF(4, 8, 56, 40), 10, 10);
+    static const QPointF tail[] = { QPointF(16, 46), QPointF(10, 58), QPointF(28, 46) };
+    painter.drawPolygon(tail, 3);
+    // spark bolt, cut out of the bubble
+    painter.setBrush(bg);
+    static const QPointF bolt[] = { QPointF(35, 14), QPointF(24, 30), QPointF(31, 30),
+                                    QPointF(27, 42), QPointF(38, 26), QPointF(31, 26) };
+    painter.drawPolygon(bolt, 6);
+    painter.end();
+    cached = QIcon(pm);
+    return cached;
+}
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui(new Ui::MainWindow)
 {
@@ -276,6 +307,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui(new Ui::MainWi
     {
         auto* aiAction = new QAction(tr("AI Assistant"), this);
         aiAction->setToolTip(tr("Open the AI assistant"));
+        aiAction->setIcon(makeAiAssistantIcon());
         ui->mainToolBar->insertAction(ui->actionSettings, aiAction);
         connect(aiAction, &QAction::triggered, this, &MainWindow::openAiAssistant);
     }
@@ -284,11 +316,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui(new Ui::MainWi
     {
         auto* worldsAction = new QAction(tr("Worlds"), this);
         worldsAction->setToolTip(tr("Manage worlds of the selected instance"));
+        worldsAction->setIcon(QIcon::fromTheme("worlds", makeAiAssistantIcon()));
         ui->mainToolBar->insertAction(ui->actionSettings, worldsAction);
         connect(worldsAction, &QAction::triggered, this, &MainWindow::openWorldManager);
 
         auto* updateModsAction = new QAction(tr("Update mods"), this);
         updateModsAction->setToolTip(tr("Update all Modrinth mods of the selected instance"));
+        updateModsAction->setIcon(QIcon::fromTheme("refresh", makeAiAssistantIcon()));
         ui->mainToolBar->insertAction(ui->actionSettings, updateModsAction);
         connect(updateModsAction, &QAction::triggered, this, &MainWindow::updateSelectedInstanceMods);
     }

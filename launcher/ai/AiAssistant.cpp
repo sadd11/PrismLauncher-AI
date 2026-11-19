@@ -26,13 +26,22 @@
 #include "minecraft/WorldList.h"
 #include "minecraft/WorldTasks.h"
 #include "modplatform/ModUpdater.h"
+#include "modplatform/packwiz/Packwiz.h"
+#include "InstanceImportTask.h"
 #include "ui/themes/ThemeManager.h"
 #include "modplatform/modrinth/ModrinthInstanceCreationTask.h"
 #include "settings/SettingsObject.h"
 #include "tasks/Task.h"
 
+#include <QDateTime>
+#include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileInfo>
+#include <QHttpMultiPart>
+#include <QJsonArray>
+#include <QSet>
+#include <QTemporaryDir>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QJsonObject>
@@ -109,6 +118,136 @@ std::optional<std::pair<QString, QString>> primaryFileOfVersion(const QJsonObjec
     return std::make_pair(chosen["url"].toString(), chosen["filename"].toString());
 }
 
+/// CurseForge class ids for content types (verified against /v1/categories?gameId=432).
+int cfClassIdFor(const QString& contentType)
+{
+    if (contentType == "mod")
+        return 6;
+    if (contentType == "plugin")
+        return 5;
+    if (contentType == "shader")
+        return 6552;
+    if (contentType == "resourcepack" || contentType == "texturepack")
+        return 12;
+    if (contentType == "datapack")
+        return 6945;
+    if (contentType == "modpack")
+        return 4471;
+    if (contentType == "world")
+        return 17;
+    return -1;
+}
+
+QJsonDocument cfGet(const QString& path, QString* error = nullptr)
+{
+    QNetworkRequest request((QUrl(QStringLiteral("https://api.curseforge.com/v1%1").arg(path))));
+    request.setTransferTimeout(180000);
+    request.setRawHeader("Accept", "application/json");
+    request.setRawHeader("x-api-key", BuildConfig.FLAME_API_KEY.toUtf8());
+    request.setRawHeader("User-Agent", QString("%1/%2 (AI assistant)")
+                                            .arg(BuildConfig.LAUNCHER_DISPLAYNAME, BuildConfig.printableVersionString())
+                                            .toUtf8());
+
+    auto* nam = new QNetworkAccessManager();
+    QEventLoop loop;
+    QTimer::singleShot(180000, &loop, &QEventLoop::quit);
+    auto* reply = nam->get(request);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const QByteArray body = reply->readAll();
+    const bool ok = reply->error() == QNetworkReply::NoError;
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QString errorString = reply->errorString();
+    reply->deleteLater();
+    nam->deleteLater();
+    if (!ok) {
+        if (error) {
+            *error = statusCode > 0 ? QStringLiteral("HTTP %1: %2").arg(statusCode).arg(QString::fromUtf8(body.left(300)))
+                                    : errorString;
+        }
+        return {};
+    }
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+    if (parseError.error != QJsonParseError::NoError && error) {
+        *error = QStringLiteral("invalid JSON response: %1").arg(parseError.errorString());
+    }
+    return doc;
+}
+
+/// Picks the newest CurseForge release matching the Minecraft version; returns {url, fileName}.
+std::optional<std::pair<QString, QString>> cfLatestFile(const QJsonArray& files, const QString& mcVersion)
+{
+    qint64 bestScore = -1;
+    int bestIdx = -1;
+    for (int i = 0; i < files.size(); ++i) {
+        auto obj = files.at(i).toObject();
+        const auto gameVersions = obj["gameVersions"].toArray();
+        if (!mcVersion.isEmpty() && !gameVersions.isEmpty()) {
+            bool matches = false;
+            for (const auto& v : gameVersions) {
+                if (v.toString() == mcVersion) {
+                    matches = true;
+                    break;
+                }
+            }
+            if (!matches) {
+                continue;
+            }
+        }
+        const qint64 id = obj["id"].toVariant().toLongLong();
+        // releases beat betas/snapshots, then prefer the highest file id (newest)
+        const qint64 score = (obj["releaseType"].toInt() == 1 ? (1LL << 40) : 0) + id;
+        if (score > bestScore) {
+            bestScore = score;
+            bestIdx = i;
+        }
+    }
+    if (bestIdx < 0) {
+        return std::nullopt;
+    }
+    auto obj = files.at(bestIdx).toObject();
+    QString fileName = obj["fileName"].toString();
+    QString url = obj["downloadUrl"].toString();
+    if (url.isEmpty()) {
+        const qint64 id = obj["id"].toVariant().toLongLong();
+        url = QStringLiteral("https://edge.forgecdn.net/files/%1/%2/%3").arg(id / 1000).arg(id % 1000).arg(fileName);
+    }
+    return std::make_pair(url, fileName);
+}
+
+struct ShotInfo {
+    QString path;
+    QDateTime mtime;
+    qint64 size = 0;
+};
+
+/// Newest-first screenshots of an instance (launcher saves + F2 saves).
+QList<ShotInfo> collectScreenshots(MinecraftInstance* inst)
+{
+    QList<ShotInfo> shots;
+    QSet<QString> seen;
+    const QStringList dirs = { FS::PathCombine(inst->instanceRoot(), "screenshots"),
+                               FS::PathCombine(inst->gameRoot(), "screenshots") };
+    for (const auto& dirPath : dirs) {
+        const QDir dir(dirPath);
+        if (!dir.exists()) {
+            continue;
+        }
+        const auto infos = dir.entryInfoList(QStringList{ "*.png", "*.jpg", "*.jpeg" }, QDir::Files, QDir::Time);
+        for (const auto& info : infos) {
+            const QString canon = info.absoluteFilePath();
+            if (seen.contains(canon)) {
+                continue;
+            }
+            seen.insert(canon);
+            shots.append({ canon, info.lastModified(), info.size() });
+        }
+    }
+    std::sort(shots.begin(), shots.end(), [](const ShotInfo& a, const ShotInfo& b) { return a.mtime > b.mtime; });
+    return shots;
+}
+
 }  // namespace
 
 AiAssistant::AiAssistant(QObject* parent) : QObject(parent), m_nam(new QNetworkAccessManager(this))
@@ -182,9 +321,10 @@ QJsonArray AiAssistant::toolSpecs()
            { { "instance", str("Instance id or name") } },
            { "instance" }),
         fn("search_content",
-           "Search Modrinth for content.",
+           "Search Modrinth or CurseForge for content.",
            { { "query", str("Search words") },
              { "content_type", enumType("What to search", { "mod", "plugin", "datapack", "shader", "resourcepack", "modpack" }) },
+             { "provider", enumType("Where to search (default modrinth)", { "modrinth", "curseforge" }) },
              { "limit", intType("How many results to return (default 8)") } },
            { "query", "content_type" }),
         fn("get_content_versions",
@@ -194,12 +334,28 @@ QJsonArray AiAssistant::toolSpecs()
              { "loader", str("Optional loader filter (fabric/quilt/forge/neoforge)") } },
            { "project_id" }),
         fn("install_content",
-           "Install content into an instance. For modpacks a NEW instance is created from the pack.",
+           "Install content into an instance from Modrinth or CurseForge. For modpacks a NEW instance is created from the pack.",
            { { "instance", str("Target instance id or name (ignored for modpacks)") },
-             { "project_id", str("Modrinth project id or slug") },
+             { "project_id", str("Modrinth project id/slug or CurseForge numeric id") },
              { "content_type", enumType("Content type", { "mod", "plugin", "datapack", "shader", "resourcepack", "modpack" }) },
-             { "version_id", str("Optional specific Modrinth version id; latest compatible is used otherwise") } },
+             { "provider", enumType("Where to install from (default modrinth)", { "modrinth", "curseforge" }) },
+             { "version_id", str("Optional specific version id; latest compatible is used otherwise") } },
            { "instance", "project_id", "content_type" }),
+        fn("uninstall_mod",
+           "Uninstall (delete) a mod from an instance's mods folder by name (destructive!).",
+           { { "instance", str("Instance id or name") },
+             { "name", str("Mod name, slug or file name (fuzzy match allowed)") } },
+           { "instance", "name" }),
+        fn("list_screenshots",
+           "List the newest screenshots of an instance with their file paths.",
+           { { "instance", str("Instance id or name") },
+             { "limit", intType("How many screenshots to return (default 8)") } },
+           { "instance" }),
+        fn("upload_screenshot",
+           "Upload a screenshot of an instance to Imgur and return its public URL.",
+           { { "instance", str("Instance id or name") },
+             { "name", str("Screenshot file name or 1-based index; omit for the newest one") } },
+           { "instance" }),
         fn("set_instance_settings",
            "Change instance settings. Pass only the fields to change.",
            { { "instance", str("Instance id or name") },
@@ -983,14 +1139,47 @@ AiToolResult AiAssistant::toolLaunchInstance(const QString& idOrName)
                      : tr("Failed to start '%1' (another launch may already be running)").arg(inst->name()) };
 }
 
-AiToolResult AiAssistant::toolSearchContent(const QString& query, const QString& contentType, int limit)
+AiToolResult AiAssistant::toolSearchContent(const QString& query, const QString& contentType, int limit, const QString& provider)
 {
+    if (limit <= 0 || limit > 25) {
+        limit = 8;
+    }
+
+    if (provider == QStringLiteral("curseforge")) {
+        const int classId = cfClassIdFor(contentType);
+        if (classId <= 0) {
+            return { false, tr("Content type '%1' is not supported on CurseForge").arg(contentType) };
+        }
+        QUrlQuery urlQuery;
+        urlQuery.addQueryItem("gameId", "432");
+        urlQuery.addQueryItem("classId", QString::number(classId));
+        urlQuery.addQueryItem("searchFilter", query);
+        urlQuery.addQueryItem("sortField", "2");
+        urlQuery.addQueryItem("sortOrder", "desc");
+        urlQuery.addQueryItem("pageSize", QString::number(limit));
+        QString error;
+        auto doc = cfGet(QStringLiteral("/mods/search?%1").arg(urlQuery.toString(QUrl::FullyEncoded)), &error);
+        if (!error.isEmpty()) {
+            return { false, tr("CurseForge search failed: %1").arg(error) };
+        }
+        const auto hits = doc.object()["data"].toArray();
+        if (hits.isEmpty()) {
+            return { true, tr("Nothing found for '%1'").arg(query) };
+        }
+        QStringList lines;
+        for (const auto& hit : hits) {
+            auto obj = hit.toObject();
+            lines << QStringLiteral("- %1 (id=%2, %3 downloads): %4")
+                         .arg(obj["name"].toString(), obj["id"].toVariant().toString(),
+                              obj["downloadCount"].toVariant().toString(), obj["summary"].toString());
+        }
+        return { true, lines.join(u'
+') };
+    }
+
     const QString projectType = modrinthProjectType(contentType);
     if (projectType.isEmpty()) {
         return { false, tr("Unknown content type '%1'").arg(contentType) };
-    }
-    if (limit <= 0 || limit > 25) {
-        limit = 8;
     }
 
     // one facet group: project_type
@@ -1067,8 +1256,77 @@ AiToolResult AiAssistant::toolContentVersions(const QString& projectId, const QS
 AiToolResult AiAssistant::toolInstallContent(const QString& idOrName,
                                              const QString& projectId,
                                              const QString& contentType,
-                                             const QString& versionId)
+                                             const QString& versionId,
+                                             const QString& provider)
 {
+    if (provider == QStringLiteral("curseforge")) {
+        const int classId = cfClassIdFor(contentType);
+        if (classId <= 0) {
+            return { false, tr("Content type '%1' is not supported on CurseForge").arg(contentType) };
+        }
+        QString error;
+        auto doc = cfGet(QStringLiteral("/mods/%1/files").arg(projectId), &error);
+        if (!error.isEmpty()) {
+            return { false, tr("CurseForge request failed: %1").arg(error) };
+        }
+        const auto files = doc.object()["data"].toArray();
+        if (files.isEmpty()) {
+            return { false, tr("No files found for CurseForge project '%1'").arg(projectId) };
+        }
+
+        if (contentType == "modpack") {
+            // download the newest pack archive and import it as a new instance
+            auto packFile = cfLatestFile(files, QString());
+            if (!packFile) {
+                return { false, tr("No downloadable pack archive found for '%1'").arg(projectId) };
+            }
+            QTemporaryDir tempDir;
+            if (!tempDir.isValid()) {
+                return { false, tr("Could not create a temporary folder") };
+            }
+            const QString zipPath = tempDir.filePath(packFile->second);
+            auto dl = httpDownload(packFile->first, zipPath);
+            if (!dl.ok) {
+                return { false, tr("Download failed: %1").arg(dl.error) };
+            }
+            auto stagingPath = APPLICATION->instances()->getStagedInstancePath({});
+            if (stagingPath.isEmpty()) {
+                return { false, tr("Could not create a staging folder") };
+            }
+            auto task = std::make_unique<InstanceImportTask>(QUrl::fromLocalFile(zipPath), true /* trustedSource */);
+            task->setIcon("default");
+            auto importError = syncRunTask(task.get());
+            if (!importError.isEmpty()) {
+                return { false, tr("Import failed: %1").arg(importError) };
+            }
+            if (!APPLICATION->instances()->commitStagedInstance(stagingPath, *task, QString())) {
+                return { false, tr("Failed to commit the imported instance") };
+            }
+            return { true, tr("Installed CurseForge modpack '%1' as a new instance").arg(projectId) };
+        }
+
+        auto* inst = findInstance(idOrName);
+        if (!inst) {
+            return { false, tr("Instance '%1' not found").arg(idOrName) };
+        }
+        const QString mcVersion = inst->getPackProfile()->getComponentVersion("net.minecraft");
+        auto file = cfLatestFile(files, mcVersion);
+        if (!file) {
+            return { false,
+                     tr("No compatible version of the project '%1' for Minecraft %2 was found")
+                         .arg(projectId, mcVersion.isEmpty() ? tr("(unknown)") : mcVersion) };
+        }
+        const QString folder = contentFolderFor(contentType);
+        const QString targetDir = FS::PathCombine(inst->gameRoot(), folder);
+        const QString targetPath = FS::PathCombine(targetDir, file->second);
+        FS::ensureFolderPathExists(targetDir);
+        auto dl = httpDownload(file->first, targetPath);
+        if (!dl.ok) {
+            return { false, tr("Download failed: %1").arg(dl.error) };
+        }
+        return { true, tr("Installed %1 into %2 from CurseForge").arg(file->second, targetDir) };
+    }
+
     // modpacks become their own instance via ModrinthCreationTask
     if (contentType == "modpack") {
         auto stagingPath = APPLICATION->instances()->getStagedInstancePath({});
@@ -1173,6 +1431,178 @@ AiToolResult AiAssistant::toolInstallContent(const QString& idOrName,
 
     return { true,
              tr("Installed %1 into %2 (version %3)").arg(file->second, targetDir, chosen["version_number"].toString()) };
+}
+
+AiToolResult AiAssistant::toolUninstallMod(const QString& idOrName, const QString& name)
+{
+    auto* inst = findInstance(idOrName);
+    if (!inst) {
+        return { false, tr("Instance '%1' not found").arg(idOrName) };
+    }
+    const QDir modsDir(FS::PathCombine(inst->gameRoot(), "mods"));
+    if (!modsDir.exists()) {
+        return { false, tr("Mods folder does not exist: %1").arg(modsDir.path()) };
+    }
+    const QString needle = name.trimmed().toLower();
+    if (needle.isEmpty()) {
+        return { false, tr("Mod name is empty") };
+    }
+
+    QSet<QString> toDelete;
+    const auto files = modsDir.entryList(QDir::Files, QDir::Name);
+    // pass 1: packwiz metadata (match by mod name, slug or file name; also pull the jar it points to)
+    for (const auto& f : files) {
+        if (!f.endsWith(QStringLiteral(".pw.toml"))) {
+            continue;
+        }
+        auto mod = Packwiz::V1::getIndexForMod(modsDir, f.left(f.size() - 8));
+        if (!mod.isValid()) {
+            continue;
+        }
+        if (mod.name.toLower().contains(needle) || mod.slug.toLower().contains(needle) ||
+            mod.filename.toLower().contains(needle)) {
+            toDelete.insert(f);
+            if (!mod.filename.isEmpty()) {
+                toDelete.insert(mod.filename);
+            }
+        }
+    }
+    // pass 2: plain files (jar name match)
+    for (const auto& f : files) {
+        if (f.endsWith(QStringLiteral(".pw.toml"))) {
+            continue;
+        }
+        if (f.toLower().contains(needle)) {
+            toDelete.insert(f);
+        }
+    }
+    if (toDelete.isEmpty()) {
+        return { false, tr("No mod matching '%1' found in %2").arg(name, modsDir.path()) };
+    }
+
+    QStringList deleted, failed;
+    for (const auto& fname : toDelete) {
+        const QString path = modsDir.filePath(fname);
+        if (!QFile::exists(path)) {
+            continue;
+        }
+        if (QFile::remove(path)) {
+            deleted << fname;
+        } else {
+            failed << fname;
+        }
+    }
+    if (!failed.isEmpty()) {
+        return { false, tr("Failed to delete: %1").arg(failed.join(QStringLiteral(", "))) };
+    }
+    return { true, tr("Deleted from %1: %2").arg(modsDir.path(), deleted.join(QStringLiteral(", "))) };
+}
+
+AiToolResult AiAssistant::toolListScreenshots(const QString& idOrName, int limit)
+{
+    auto* inst = findInstance(idOrName);
+    if (!inst) {
+        return { false, tr("Instance '%1' not found").arg(idOrName) };
+    }
+    if (limit <= 0 || limit > 50) {
+        limit = 8;
+    }
+    const auto shots = collectScreenshots(inst);
+    if (shots.isEmpty()) {
+        return { true, tr("No screenshots found for '%1'").arg(inst->name()) };
+    }
+    QStringList lines;
+    int shown = 0;
+    for (const auto& shot : shots) {
+        lines << QStringLiteral("- %1 | %2 | %3 KB")
+                     .arg(QFileInfo(shot.path).fileName(),
+                          shot.mtime.toString(QStringLiteral("yyyy-MM-dd HH:mm")),
+                          QString::number(shot.size / 1024))
+              << QStringLiteral("  path: %1").arg(shot.path);
+        if (++shown >= limit) {
+            break;
+        }
+    }
+    return { true, lines.join(u'\n') };
+}
+
+AiToolResult AiAssistant::toolUploadScreenshot(const QString& idOrName, const QString& name)
+{
+    auto* inst = findInstance(idOrName);
+    if (!inst) {
+        return { false, tr("Instance '%1' not found").arg(idOrName) };
+    }
+    const auto shots = collectScreenshots(inst);
+    if (shots.isEmpty()) {
+        return { false, tr("No screenshots found for '%1'").arg(inst->name()) };
+    }
+    QString path;
+    const QString needle = name.trimmed();
+    if (needle.isEmpty()) {
+        path = shots.first().path;
+    } else {
+        for (const auto& shot : shots) {
+            if (QFileInfo(shot.path).fileName().contains(needle, Qt::CaseInsensitive)) {
+                path = shot.path;
+                break;
+            }
+        }
+        if (path.isEmpty()) {
+            bool ok = false;
+            const int idx = needle.toInt(&ok);
+            if (ok && idx >= 1 && idx <= shots.size()) {
+                path = shots.at(idx - 1).path;
+            }
+        }
+        if (path.isEmpty()) {
+            return { false, tr("No screenshot matching '%1' found").arg(name) };
+        }
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return { false, tr("Cannot open %1").arg(path) };
+    }
+    auto* multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+    QHttpPart imagePart;
+    imagePart.setHeader(QNetworkRequest::ContentTypeHeader, "image/png");
+    imagePart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                        QStringLiteral("form-data; name=\"image\"; filename=\"%1\"").arg(QFileInfo(path).fileName()));
+    imagePart.setBodyDevice(&file);
+    multiPart->append(imagePart);
+    QHttpPart typePart;
+    typePart.setHeader(QNetworkRequest::ContentDispositionHeader, QStringLiteral("form-data; name=\"type\""));
+    typePart.setBody("image");
+    multiPart->append(typePart);
+    QHttpPart titlePart;
+    titlePart.setHeader(QNetworkRequest::ContentDispositionHeader, QStringLiteral("form-data; name=\"title\""));
+    titlePart.setBody(QFileInfo(path).fileName().toUtf8());
+    multiPart->append(titlePart);
+
+    QNetworkRequest request((QUrl(QStringLiteral("%1image").arg(BuildConfig.IMGUR_BASE_URL))));
+    request.setTransferTimeout(120000);
+    request.setRawHeader("Authorization", QStringLiteral("Client-ID %1").arg(BuildConfig.IMGUR_CLIENT_ID).toUtf8());
+    auto* reply = m_nam->post(request, multiPart);
+    multiPart->setParent(reply);  // free the multiPart together with the reply
+    QEventLoop loop;
+    QTimer::singleShot(120000, &loop, &QEventLoop::quit);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const QByteArray bodyBytes = reply->readAll();
+    const bool ok = reply->error() == QNetworkReply::NoError;
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QString errorString = reply->errorString();
+    reply->deleteLater();
+    if (!ok) {
+        return { false,
+                 tr("Imgur upload failed: %1").arg(statusCode > 0 ? QStringLiteral("HTTP %1").arg(statusCode) : errorString) };
+    }
+    auto doc = QJsonDocument::fromJson(bodyBytes);
+    const QString link = doc.object()["data"].toObject()["link"].toString();
+    if (link.isEmpty()) {
+        return { false, tr("Imgur did not return a link") };
+    }
+    return { true, tr("Uploaded %1 -> %2").arg(QFileInfo(path).fileName(), link) };
 }
 
 AiToolResult AiAssistant::toolSetInstanceSettings(const QString& idOrName, const QJsonObject& changes)
@@ -1440,12 +1870,19 @@ AiToolResult AiAssistant::executeTool(const QString& name, const QJsonObject& ar
     if (name == "launch_instance")
         return toolLaunchInstance(args["instance"].toString());
     if (name == "search_content")
-        return toolSearchContent(args["query"].toString(), args["content_type"].toString(), args["limit"].toInt());
+        return toolSearchContent(args["query"].toString(), args["content_type"].toString(), args["limit"].toInt(),
+                                 args["provider"].toString());
     if (name == "get_content_versions")
         return toolContentVersions(args["project_id"].toString(), args["minecraft_version"].toString(), args["loader"].toString());
     if (name == "install_content")
         return toolInstallContent(args["instance"].toString(), args["project_id"].toString(), args["content_type"].toString(),
-                                  args["version_id"].toString());
+                                  args["version_id"].toString(), args["provider"].toString());
+    if (name == "uninstall_mod")
+        return toolUninstallMod(args["instance"].toString(), args["name"].toString());
+    if (name == "list_screenshots")
+        return toolListScreenshots(args["instance"].toString(), args["limit"].toInt());
+    if (name == "upload_screenshot")
+        return toolUploadScreenshot(args["instance"].toString(), args["name"].toString());
     if (name == "set_instance_settings")
         return toolSetInstanceSettings(args["instance"].toString(), args);
     if (name == "list_minecraft_versions")

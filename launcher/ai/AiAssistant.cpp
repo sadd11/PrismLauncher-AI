@@ -26,6 +26,7 @@
 #include "minecraft/WorldList.h"
 #include "minecraft/WorldTasks.h"
 #include "modplatform/ModUpdater.h"
+#include "ui/themes/ThemeManager.h"
 #include "modplatform/modrinth/ModrinthInstanceCreationTask.h"
 #include "settings/SettingsObject.h"
 #include "tasks/Task.h"
@@ -1337,7 +1338,7 @@ AiToolResult AiAssistant::toolListWorlds(const QString& idOrName)
         lines << QStringLiteral("- %1 | played: %2 | %3 | seed %4")
                      .arg(world.name(),
                           lastPlayed.isValid() ? lastPlayed.toString("yyyy-MM-dd HH:mm") : tr("never"),
-                          world.gameType(),
+                          world.gameType().toLogString(),
                           QString::number(world.seed()));
     }
     return { true, lines.join(u'\n') };
@@ -1351,7 +1352,7 @@ AiToolResult AiAssistant::toolDeleteWorld(const QString& idOrName, const QString
     }
     WorldList worldList(QDir(inst->gameRoot()).filePath("saves"), inst);
     worldList.update();
-    for (auto& w : worldList.allWorlds()) {
+    for (World w : worldList.allWorlds()) {
         if (w.name() == world || w.folderName() == world) {
             const QString folder = w.container().absoluteFilePath();
             if (w.destroy()) {

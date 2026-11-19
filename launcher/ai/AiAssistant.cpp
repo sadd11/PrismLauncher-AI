@@ -54,6 +54,7 @@
 #include <QUrl>
 #include <QUrlQuery>
 
+#include <algorithm>
 #include <optional>
 #include <utility>
 

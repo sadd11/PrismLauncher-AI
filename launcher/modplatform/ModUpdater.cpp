@@ -15,6 +15,8 @@
 #include "minecraft/MinecraftInstance.h"
 #include "modplatform/packwiz/Packwiz.h"
 
+#include <QObject>
+
 #include <QEventLoop>
 #include <QDir>
 #include <QFile>
@@ -67,91 +69,6 @@ QJsonDocument modrinthGet(const QString& path)
     return QJsonDocument::fromJson(body);
 }
 
-QStringList downloadHeaders()
-{
-    return {};
-}
-
-bool downloadToFile(const QString& url, const QString& targetPath)
-{
-    QNetworkRequest request((QUrl(url)));
-    request.setTransferTimeout(600000);
-    request.setRawHeader("User-Agent", QString("%1/%2 (AI assistant)")
-                                            .arg(BuildConfig.LAUNCHER_DISPLAYNAME, BuildConfig.printableVersionString())
-                                            .toUtf8());
-    auto* nam = new QNetworkAccessManager();
-    QEventLoop loop;
-    QTimer::singleShot(600000, &loop, &QEventLoop::quit);
-    auto* reply = nam->get(request);
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
-    const bool ok = reply->error() == QNetworkReply::NoError;
-    const QByteArray body = reply->readAll();
-    reply->deleteLater();
-    nam->deleteLater();
-    if (!ok) {
-        return false;
-    }
-    QFile file(targetPath);
-    if (!file.open(QIODevice::WriteOnly)) {
-        return false;
-    }
-    file.write(body);
-    file.close();
-    return true;
-}
-
-std::optional<VersionFile> pickLatestCompatible(const QString& projectId, const QStringList& mcVersions)
-{
-    QStringList facets;
-    if (!mcVersions.isEmpty()) {
-        // any of the pack's supported versions is fine
-        QJsonArray gv;
-        for (const auto& v : mcVersions) {
-            gv.append(v);
-        }
-        facets.append(gv);
-    }
-    QString path = QStringLiteral("/project/%1/version").arg(projectId);
-    if (!facets.isEmpty()) {
-        QString facetsJson = QString::fromUtf8(QJsonDocument(facets).toJson(QJsonDocument::Compact));
-        path += QStringLiteral("?facets=%1").arg(QString::fromUtf8(QUrl::toPercentEncoding(facetsJson)));
-    }
-    auto doc = modrinthGet(path);
-    const auto versions = doc.array();
-    for (const auto& v : versions) {
-        auto obj = v.toObject();
-        auto files = obj["files"].toArray();
-        QJsonObject chosen;
-        bool found = false;
-        for (const auto& f : files) {
-            auto fo = f.toObject();
-            if (fo["primary"].toBool()) {
-                chosen = fo;
-                found = true;
-                break;
-            }
-        }
-        if (!found && !files.isEmpty()) {
-            chosen = files.first().toObject();
-        }
-        if (!found) {
-            continue;
-        }
-        VersionFile vf;
-        vf.versionId = obj["id"].toString();
-        vf.versionNumber = obj["version_number"].toString();
-        vf.fileName = chosen["filename"].toString();
-        vf.downloadUrl = chosen["url"].toString();
-        vf.sha512 = chosen["hashes"].toObject()["sha512"].toString();
-        if (vf.downloadUrl.isEmpty()) {
-            continue;
-        }
-        return vf;
-    }
-    return std::nullopt;
-}
-
 bool sha512Matches(const QString& filePath, const QString& expected)
 {
     if (expected.isEmpty()) {
@@ -162,11 +79,7 @@ bool sha512Matches(const QString& filePath, const QString& expected)
         return false;
     }
     QCryptographicHash hash(QCryptographicHash::Sha512);
-    char buf[65536];
-    qint64 n = 0;
-    while ((n = file.read(buf, sizeof(buf))) > 0) {
-        hash.addData(buf, int(n));
-    }
+    hash.addData(file.readAll());
     return QString::fromLatin1(hash.result().toHex()) == expected.toLower();
 }
 
@@ -180,14 +93,14 @@ UpdateSummary updateInstanceMods(MinecraftInstance* instance,
     UpdateSummary summary;
     const QDir modsDir(FS::PathCombine(instance->gameRoot(), "mods"));
     if (!modsDir.exists()) {
-        summary.failed << tr("Mods folder does not exist: %1").arg(modsDir.path());
+        summary.failed << QObject::tr("Mods folder does not exist: %1").arg(modsDir.path());
         if (progress) progress(0, 1, summary.failed.last());
         return summary;
     }
 
     const auto pwFiles = modsDir.entryList(QStringList{ "*.pw.toml" }, QDir::Files, QDir::Name);
     if (pwFiles.isEmpty()) {
-        summary.upToDate << tr("No packwiz metadata (*.pw.toml) found — nothing to update");
+        summary.upToDate << QObject::tr("No packwiz metadata (*.pw.toml) found — nothing to update");
         if (progress) progress(1, 1, summary.upToDate.last());
         return summary;
     }
@@ -203,7 +116,7 @@ UpdateSummary updateInstanceMods(MinecraftInstance* instance,
             summary.skippedNoMetadata << slug;
             continue;
         }
-        if (mod.provider != ModPlatform::ResourceProvider::Modrinth) {
+        if (mod.provider != ModPlatform::ResourceProvider::MODRINTH) {
             summary.skippedNoMetadata << slug;
             continue;
         }
@@ -215,7 +128,7 @@ UpdateSummary updateInstanceMods(MinecraftInstance* instance,
         auto doc = modrinthGet(QStringLiteral("/project/%1/version").arg(projectId));
         const auto versions = doc.array();
         if (versions.isEmpty()) {
-            summary.upToDate << tr("%1: no versions found").arg(slug);
+            summary.upToDate << QObject::tr("%1: no versions found").arg(slug);
             continue;
         }
 
@@ -264,7 +177,7 @@ UpdateSummary updateInstanceMods(MinecraftInstance* instance,
         }
 
         if (!latest || latest->versionNumber == currentVersion || latest->fileName == mod.filename) {
-            summary.upToDate << tr("%1 (id=%2) is up to date").arg(slug, currentVersion);
+            summary.upToDate << QObject::tr("%1 (id=%2) is up to date").arg(slug, currentVersion);
             if (progress) progress(idx, total, slug);
             continue;
         }
@@ -272,12 +185,12 @@ UpdateSummary updateInstanceMods(MinecraftInstance* instance,
         // download the new file
         const QString newFilePath = modsDir.filePath(latest->fileName);
         if (!downloadToFile(latest->downloadUrl, newFilePath)) {
-            summary.failed << tr("%1: failed to download %2").arg(slug, latest->fileName);
+            summary.failed << QObject::tr("%1: failed to download %2").arg(slug, latest->fileName);
             continue;
         }
         if (!sha512Matches(newFilePath, latest->sha512)) {
             QFile::remove(newFilePath);
-            summary.failed << tr("%1: SHA512 mismatch for %2").arg(slug, latest->fileName);
+            summary.failed << QObject::tr("%1: SHA512 mismatch for %2").arg(slug, latest->fileName);
             continue;
         }
 
@@ -291,7 +204,7 @@ UpdateSummary updateInstanceMods(MinecraftInstance* instance,
         mod.version() = latest->versionId;
         Packwiz::V1::updateModIndex(modsDir, mod);
 
-        summary.updated << tr("%1: %2 → %3 (%4)").arg(slug, currentVersion, latest->versionNumber, latest->fileName);
+        summary.updated << QObject::tr("%1: %2 → %3 (%4)").arg(slug, currentVersion, latest->versionNumber, latest->fileName);
         if (progress) progress(idx, total, summary.updated.last());
     }
 
@@ -302,16 +215,20 @@ QString summarize(const UpdateSummary& summary)
 {
     QStringList lines;
     if (!summary.updated.isEmpty()) {
-        lines << tr("Updated:") << summary.updated;
+        lines << QObject::tr("Updated:");
+        lines += summary.updated;
     }
     if (!summary.upToDate.isEmpty()) {
-        lines << tr("Up to date:") << summary.upToDate;
+        lines << QObject::tr("Up to date:");
+        lines += summary.upToDate;
     }
     if (!summary.skippedNoMetadata.isEmpty()) {
-        lines << tr("Skipped (non-Modrinth or no metadata):") << summary.skippedNoMetadata;
+        lines << QObject::tr("Skipped (non-Modrinth or no metadata):");
+        lines += summary.skippedNoMetadata;
     }
     if (!summary.failed.isEmpty()) {
-        lines << tr("Failed:") << summary.failed;
+        lines << QObject::tr("Failed:");
+        lines += summary.failed;
     }
     return lines.join(u'\n');
 }

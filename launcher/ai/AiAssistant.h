@@ -111,7 +111,7 @@ class AiAssistant : public QObject {
                           const QStringList& headers, int timeoutMs);
     HttpReply httpGet(const QString& url, int timeoutMs = 180000);
     HttpReply httpDownload(const QString& url, const QString& targetPath);
-    QJsonDocument modrinthGet(const QString& path);
+    QJsonDocument modrinthGet(const QString& path, QString* error = nullptr);
     QString syncRunTask(class Task* task);
 
     MinecraftInstance* findInstance(const QString& idOrName) const;

@@ -34,6 +34,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QJsonDocument>
+#include <QJsonParseError>
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QNetworkAccessManager>
@@ -321,13 +322,23 @@ AiAssistant::HttpReply AiAssistant::httpDownload(const QString& url, const QStri
     return reply;
 }
 
-QJsonDocument AiAssistant::modrinthGet(const QString& path)
+QJsonDocument AiAssistant::modrinthGet(const QString& path, QString* error)
 {
     auto reply = httpGet(QStringLiteral("https://api.modrinth.com/v2%1").arg(path));
     if (!reply.ok) {
+        if (error) {
+            *error = reply.statusCode > 0
+                         ? QStringLiteral("HTTP %1: %2").arg(reply.statusCode).arg(QString::fromUtf8(reply.body.left(300)))
+                         : reply.error;
+        }
         return {};
     }
-    return QJsonDocument::fromJson(reply.body);
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(reply.body, &parseError);
+    if (parseError.error != QJsonParseError::NoError && error) {
+        *error = QStringLiteral("invalid JSON response: %1").arg(parseError.errorString());
+    }
+    return doc;
 }
 
 QString AiAssistant::syncRunTask(Task* task)
@@ -991,8 +1002,14 @@ AiToolResult AiAssistant::toolSearchContent(const QString& query, const QString&
     urlQuery.addQueryItem("query", query);
     urlQuery.addQueryItem("facets", QString::fromUtf8(QJsonDocument(facets).toJson(QJsonDocument::Compact)));
 
-    auto doc = modrinthGet(QStringLiteral("/search?%1").arg(urlQuery.toString(QUrl::FullyEncoded)));
-    const auto hits = doc.array();
+    QString error;
+    auto doc = modrinthGet(QStringLiteral("/search?%1").arg(urlQuery.toString(QUrl::FullyEncoded)), &error);
+    if (!error.isEmpty()) {
+        return { false, tr("Modrinth search failed: %1").arg(error) };
+    }
+    // /search returns an object {"hits":[...], ...}, not a bare array
+    const QJsonObject searchResult = doc.object();
+    const auto hits = searchResult.contains("hits") ? searchResult["hits"].toArray() : doc.array();
     if (hits.isEmpty()) {
         return { true, tr("Nothing found for '%1'").arg(query) };
     }
@@ -1019,7 +1036,11 @@ AiToolResult AiAssistant::toolContentVersions(const QString& projectId, const QS
     if (!filters.isEmpty()) {
         path += QStringLiteral("?facets=[%1]").arg(QStringList{ filters }.join(u','));
     }
-    auto doc = modrinthGet(path);
+    QString error;
+    auto doc = modrinthGet(path, &error);
+    if (!error.isEmpty()) {
+        return { false, tr("Modrinth request failed: %1").arg(error) };
+    }
     const auto versions = doc.array();
     if (versions.isEmpty()) {
         return { true, tr("No versions found for project '%1'%2")
@@ -1113,7 +1134,11 @@ AiToolResult AiAssistant::toolInstallContent(const QString& idOrName,
         path += QStringLiteral("?facets=[%1]").arg(QStringList{ facets }.join(u','));
     }
 
-    auto doc = modrinthGet(path);
+    QString error;
+    auto doc = modrinthGet(path, &error);
+    if (!error.isEmpty()) {
+        return { false, tr("Modrinth request failed: %1").arg(error) };
+    }
     const auto versions = doc.array();
     QJsonObject chosen;
     bool found = false;

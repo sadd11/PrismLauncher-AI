@@ -492,6 +492,9 @@ set(API_SOURCES
     modplatform/helpers/OverrideUtils.h
     modplatform/helpers/OverrideUtils.cpp
 
+    modplatform/ModUpdater.h
+    modplatform/ModUpdater.cpp
+
     ai/AiAssistant.h
     ai/AiAssistant.cpp
 
@@ -1032,6 +1035,8 @@ SET(LAUNCHER_SOURCES
     # GUI - dialogs
     ui/dialogs/AiAssistantDialog.cpp
     ui/dialogs/AiAssistantDialog.h
+    ui/dialogs/WorldManagerDialog.cpp
+    ui/dialogs/WorldManagerDialog.h
 
     ui/dialogs/AboutDialog.cpp
     ui/dialogs/AboutDialog.h

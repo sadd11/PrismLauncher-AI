@@ -13,6 +13,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 class MinecraftInstance;
 
 /**
@@ -33,9 +35,14 @@ struct UpdateSummary {
     QStringList skippedNoMetadata;
 };
 
-UpdateSummary updateInstanceMods(MinecraftInstance* instance);
+UpdateSummary updateInstanceMods(MinecraftInstance* instance,
+                                 const std::function<void(int, int, const QString&)>& progress = {});
 
 /// Same, but downloads happen synchronously; suitable for AI tools.
-UpdateSummary updateInstanceModsSync(MinecraftInstance* instance);
+UpdateSummary updateInstanceModsSync(MinecraftInstance* instance,
+                                     const std::function<void(int, int, const QString&)>& progress = {});
+
+/// Human-readable summary suitable for dialogs and the AI assistant.
+QString summarize(const UpdateSummary& summary);
 
 }  // namespace ModUpdater

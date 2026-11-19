@@ -77,8 +77,8 @@ void WorldManagerDialog::refresh()
         const QDateTime lastPlayed = world.lastPlayed();
         m_list->addItem(QStringLiteral("%1  (%2, %3)")
                             .arg(world.name(),
-                                 world.gameType(),
-                                 lastPlayed.isValid() ? lastPlayed.toString(Qt::DefaultLocaleShortDate) : tr("never played")));
+                                 world.gameType().toLogString(),
+                                 lastPlayed.isValid() ? lastPlayed.toString("yyyy-MM-dd HH:mm") : tr("never played")));
     }
     if (worldList.allWorlds().isEmpty()) {
         m_list->addItem(tr("No worlds found"));
@@ -142,7 +142,7 @@ void WorldManagerDialog::deleteSelected()
     }
     WorldList worldList(QDir(m_instance->gameRoot()).filePath("saves"), m_instance);
     worldList.update();
-    for (auto& world : worldList.allWorlds()) {
+    for (World world : worldList.allWorlds()) {
         if (world.name() == displayName) {
             world.destroy();
             break;

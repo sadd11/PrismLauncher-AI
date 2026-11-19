@@ -175,7 +175,7 @@ bool sha512Matches(const QString& filePath, const QString& expected)
 namespace ModUpdater {
 
 UpdateSummary updateInstanceMods(MinecraftInstance* instance,
-                                 const std::function<void(int, int, const QString&)>& progress = {})
+                                 const std::function<void(int, int, const QString&)>& progress)
 {
     UpdateSummary summary;
     const QDir modsDir(FS::PathCombine(instance->gameRoot(), "mods"));
@@ -317,7 +317,7 @@ QString summarize(const UpdateSummary& summary)
 }
 
 UpdateSummary updateInstanceModsSync(MinecraftInstance* instance,
-                                     const std::function<void(int, int, const QString&)>& progress = {})
+                                     const std::function<void(int, int, const QString&)>& progress)
 {
     return updateInstanceMods(instance, progress);
 }
